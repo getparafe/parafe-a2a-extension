@@ -17,24 +17,31 @@ export interface ParafeExtensionMetadata {
 
 /**
  * Decoded and verified claims from a Parafe consent token JWT.
+ * Matches the exact shape produced by the broker's createConsentToken() in src/crypto/jwt.js.
  */
 export interface ParafeConsentClaims {
-  /** Agent ID (JWT subject). */
-  sub: string;
-  /** Broker URL that issued the token (JWT issuer). */
-  iss: string;
+  /** The requested scope name (e.g. "flight-rebooking"). Single string, not an array. */
+  scope: string;
+  /** Array of permitted actions within this scope (e.g. ["read_bookings", "search_alternatives"]). */
+  permissions: string[];
+  /** Array of explicitly excluded actions (e.g. ["cancel_booking"]). */
+  excluded: string[];
+  /** The session ID this token belongs to (e.g. "sess_..."). */
+  session_id: string;
+  /** Always "consent" for consent tokens. */
+  token_type: 'consent';
+  /** Authorization modality: "autonomous", "attested", or "verified". */
+  authorization_modality: 'autonomous' | 'attested' | 'verified';
+  /** Agent ID of the handshake initiator. */
+  initiator_agent_id: string | null;
+  /** Agent ID of the handshake target. */
+  target_agent_id: string | null;
   /** Issued-at timestamp (seconds since epoch). */
   iat: number;
   /** Expiry timestamp (seconds since epoch). */
   exp: number;
-  /** Permitted scopes for this interaction. */
-  scope: string[];
-  /** The counterparty agent ID this token was issued for, if scoped to a specific agent. */
-  counterparty?: string;
-  /** Session ID, if the token is bound to a session. */
-  session_id?: string;
-  /** Organization ID of the requester. */
-  org_id?: string;
+  /** Always "parafe-trust-broker". */
+  iss: 'parafe-trust-broker';
 }
 
 /**
@@ -52,8 +59,10 @@ export interface ParafeAgentCardExtension {
 export interface VerifyOnlineOptions {
   /** Parafe broker URL. Defaults to https://api.parafe.ai */
   brokerUrl?: string;
-  /** Expected scope(s) that must be present in the token. */
-  requiredScope?: string | string[];
+  /** The action to check permission for (e.g. "read_bookings"). Required by the broker. */
+  action: string;
+  /** The session ID to validate against. If omitted, extracted from the token's session_id claim. */
+  sessionId?: string;
 }
 
 /**

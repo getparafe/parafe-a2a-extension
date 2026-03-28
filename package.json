@@ -1,6 +1,6 @@
 {
   "name": "@getparafe/a2a-extension",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Parafe trust extension for the Google A2A protocol — cryptographic agent identity and consent verification",
   "type": "module",
   "main": "./dist/index.cjs",

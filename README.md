@@ -206,7 +206,7 @@ async function handleTask(task) {
     claims = await verifyConsentTokenOffline(
       parafe.consentToken,
       brokerPublicKey,
-      'read:data' // optional: assert a required scope
+      'read_bookings' // optional: assert a required action is permitted
     );
   } catch (err) {
     if (err instanceof ExpiredConsentTokenError) {
@@ -216,14 +216,16 @@ async function handleTask(task) {
       return { error: 'Invalid consent token' };
     }
     if (err instanceof ScopeViolationError) {
-      return { error: `Insufficient scope: ${err.message}` };
+      return { error: `Action not permitted: ${err.message}` };
     }
     throw err;
   }
 
   // 3. claims is now verified — proceed with the task
-  console.log('Verified agent:', claims.sub);
-  console.log('Granted scopes:', claims.scope);
+  console.log('Scope:', claims.scope);                          // "flight-rebooking"
+  console.log('Permissions:', claims.permissions);               // ["read_bookings", ...]
+  console.log('Initiator:', claims.initiator_agent_id);          // "prf_agent_..."
+  console.log('Authorization:', claims.authorization_modality);  // "autonomous"
   console.log('Session:', parafe.sessionId);
 
   // ... do the work
@@ -239,10 +241,12 @@ For high-value actions where you want real-time confirmation from the broker:
 ```typescript
 import { verifyConsentTokenOnline } from '@getparafe/a2a-extension';
 
-const claims = await verifyConsentTokenOnline(parafe.consentToken, {
-  brokerUrl: 'https://api.parafe.ai',
-  requiredScope: 'write:data',
+const result = await verifyConsentTokenOnline(parafe.consentToken, {
+  action: 'read_bookings',
+  sessionId: parafe.sessionId,
+  brokerUrl: 'https://api.parafe.ai', // optional, defaults to this
 });
+// result.valid, result.permitted, result.action, result.expiresAt
 ```
 
 ---
@@ -262,8 +266,8 @@ const claims = await verifyConsentTokenOnline(parafe.consentToken, {
 | Export | Description |
 |---|---|
 | `extractExtensionMetadata(metadata)` | Extracts Parafe fields; throws `MissingParafeExtensionError` if absent |
-| `verifyConsentTokenOffline(token, publicKey, scope?)` | Verifies Ed25519 JWT signature locally — no network call |
-| `verifyConsentTokenOnline(token, options?)` | Verifies via broker's `/consent/verify` endpoint |
+| `verifyConsentTokenOffline(token, publicKey, action?)` | Verifies Ed25519 JWT signature locally — no network call |
+| `verifyConsentTokenOnline(token, options)` | Verifies via broker's `/consent/verify` endpoint (requires action + sessionId) |
 | `fetchBrokerPublicKey(brokerUrl?)` | Fetches broker's Ed25519 public key for offline verification |
 
 ### Errors

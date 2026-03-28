@@ -39,3 +39,4 @@ export {
   verifyConsentTokenOnline,
   fetchBrokerPublicKey,
 } from './executor.js';
+export type { ConsentVerifyResult } from './executor.js';
