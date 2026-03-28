@@ -1,0 +1,53 @@
+{
+  "name": "@getparafe/a2a-extension",
+  "version": "0.1.0",
+  "description": "Parafe trust extension for the Google A2A protocol — cryptographic agent identity and consent verification",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "a2a",
+    "agent-to-agent",
+    "parafe",
+    "trust",
+    "identity",
+    "consent",
+    "agent",
+    "ai",
+    "google-a2a"
+  ],
+  "author": "Parafe <hello@parafe.ai>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/getparafe/parafe-a2a-extension.git"
+  },
+  "homepage": "https://parafe.ai",
+  "dependencies": {
+    "jose": "^5.9.6"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
