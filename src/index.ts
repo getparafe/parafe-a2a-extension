@@ -1,20 +1,41 @@
 // Constants
 export {
   PARAFE_EXTENSION_URI,
-  PARAFE_AGENT_ID_FIELD,
-  PARAFE_CONSENT_TOKEN_FIELD,
-  PARAFE_SESSION_ID_FIELD,
-  PARAFE_ACTIVATION_HEADER_VALUE,
+  PARAFE_HANDSHAKE_CHALLENGE,
+  PARAFE_HANDSHAKE_COMPLETE,
+  PARAFE_TRUST_CONSENT_TOKEN,
   DEFAULT_BROKER_URL,
 } from './constants.js';
 
-// Types
+// Types — A2A base
 export type {
-  ParafeExtensionMetadata,
-  ParafeConsentClaims,
+  A2ADataPart,
+  A2ATextPart,
+  A2AMessagePart,
+} from './types.js';
+
+// Types — DataPart payloads
+export type {
+  HandshakeChallengePayload,
+  HandshakeCompletePayload,
+  ConsentTokenPayload,
+  HandshakeChallengeDataPart,
+  HandshakeCompleteDataPart,
+  ConsentTokenDataPart,
+} from './types.js';
+
+// Types — AgentCard
+export type {
+  ScopeRequirement,
+  ParafeExtensionParams,
   ParafeAgentCardExtension,
+  BuildAgentCardOptions,
+} from './types.js';
+
+// Types — Verification
+export type {
+  ParafeConsentClaims,
   VerifyOnlineOptions,
-  BuildMetadataOptions,
 } from './types.js';
 
 // Errors
@@ -23,20 +44,31 @@ export {
   InvalidConsentTokenError,
   ExpiredConsentTokenError,
   ScopeViolationError,
+  MalformedDataPartError,
 } from './errors.js';
 
-// Requester helpers (use when sending A2A requests)
+// DataPart builders and parsers
 export {
-  buildExtensionMetadata,
-  getAgentCardExtension,
-  activationHeaderValue,
-} from './requester.js';
+  buildHandshakeChallenge,
+  buildHandshakeComplete,
+  buildConsentTokenPart,
+  extractHandshakeChallenge,
+  extractHandshakeComplete,
+  extractConsentToken,
+  hasParafeDataPart,
+} from './data-parts.js';
 
-// Executor helpers (use when receiving A2A requests)
+// AgentCard builder and parser
 export {
-  extractExtensionMetadata,
+  buildAgentCardExtension,
+  parseAgentCardExtension,
+} from './agent-card.js';
+
+// Verification
+export {
   verifyConsentTokenOffline,
   verifyConsentTokenOnline,
   fetchBrokerPublicKey,
-} from './executor.js';
-export type { ConsentVerifyResult } from './executor.js';
+  verifyMessageConsentToken,
+} from './verification.js';
+export type { ConsentVerifyResult } from './verification.js';

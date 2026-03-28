@@ -4,15 +4,22 @@ import {
   InvalidConsentTokenError,
   ExpiredConsentTokenError,
   ScopeViolationError,
+  MalformedDataPartError,
 } from '../../src/index.js';
 
 describe('error classes', () => {
-  it('MissingParafeExtensionError has correct code and name', () => {
+  it('MissingParafeExtensionError has correct code and name (array form)', () => {
     const err = new MissingParafeExtensionError(['agent-id']);
     expect(err.code).toBe('MISSING_PARAFE_EXTENSION');
     expect(err.name).toBe('MissingParafeExtensionError');
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toContain('agent-id');
+  });
+
+  it('MissingParafeExtensionError works with string detail', () => {
+    const err = new MissingParafeExtensionError('No consent token DataPart found');
+    expect(err.code).toBe('MISSING_PARAFE_EXTENSION');
+    expect(err.message).toContain('No consent token');
   });
 
   it('InvalidConsentTokenError has correct code and name', () => {
@@ -54,12 +61,28 @@ describe('error classes', () => {
     expect(err.message).toContain('a, b');
   });
 
+  it('MalformedDataPartError has correct code, name, and dataPartType', () => {
+    const err = new MalformedDataPartError('parafe.handshake.Challenge', 'missing fields: challenge');
+    expect(err.code).toBe('MALFORMED_DATA_PART');
+    expect(err.name).toBe('MalformedDataPartError');
+    expect(err.dataPartType).toBe('parafe.handshake.Challenge');
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toContain('missing fields');
+  });
+
+  it('MalformedDataPartError works without detail', () => {
+    const err = new MalformedDataPartError('parafe.trust.ConsentToken');
+    expect(err.code).toBe('MALFORMED_DATA_PART');
+    expect(err.message).toContain('parafe.trust.ConsentToken');
+  });
+
   it('all errors are catchable as Error', () => {
     const errors = [
       new MissingParafeExtensionError(['field']),
       new InvalidConsentTokenError(),
       new ExpiredConsentTokenError(new Date()),
       new ScopeViolationError('x', []),
+      new MalformedDataPartError('parafe.test'),
     ];
 
     for (const err of errors) {

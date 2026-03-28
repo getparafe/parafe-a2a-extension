@@ -1,10 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   PARAFE_EXTENSION_URI,
-  PARAFE_AGENT_ID_FIELD,
-  PARAFE_CONSENT_TOKEN_FIELD,
-  PARAFE_SESSION_ID_FIELD,
-  PARAFE_ACTIVATION_HEADER_VALUE,
+  PARAFE_HANDSHAKE_CHALLENGE,
+  PARAFE_HANDSHAKE_COMPLETE,
+  PARAFE_TRUST_CONSENT_TOKEN,
   DEFAULT_BROKER_URL,
 } from '../../src/index.js';
 
@@ -15,14 +14,10 @@ describe('constants', () => {
     );
   });
 
-  it('metadata field keys are namespaced under the extension URI', () => {
-    expect(PARAFE_AGENT_ID_FIELD).toBe(`${PARAFE_EXTENSION_URI}/agent-id`);
-    expect(PARAFE_CONSENT_TOKEN_FIELD).toBe(`${PARAFE_EXTENSION_URI}/consent-token`);
-    expect(PARAFE_SESSION_ID_FIELD).toBe(`${PARAFE_EXTENSION_URI}/session-id`);
-  });
-
-  it('activation header value matches extension URI', () => {
-    expect(PARAFE_ACTIVATION_HEADER_VALUE).toBe(PARAFE_EXTENSION_URI);
+  it('DataPart type keys use parafe namespace', () => {
+    expect(PARAFE_HANDSHAKE_CHALLENGE).toBe('parafe.handshake.Challenge');
+    expect(PARAFE_HANDSHAKE_COMPLETE).toBe('parafe.handshake.Complete');
+    expect(PARAFE_TRUST_CONSENT_TOKEN).toBe('parafe.trust.ConsentToken');
   });
 
   it('default broker URL is api.parafe.ai', () => {

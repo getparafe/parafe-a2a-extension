@@ -1,14 +1,14 @@
 /**
- * Thrown when a required Parafe metadata field is absent from params.metadata.
+ * Thrown when a required Parafe DataPart or metadata field is absent.
  */
 export class MissingParafeExtensionError extends Error {
   readonly code = 'MISSING_PARAFE_EXTENSION';
 
-  constructor(missingFields: string[]) {
-    super(
-      `Parafe extension metadata missing required field(s): ${missingFields.join(', ')}. ` +
-        `Ensure the requesting agent includes ${missingFields.join(', ')} in params.metadata.`
-    );
+  constructor(detail: string | string[]) {
+    const msg = Array.isArray(detail)
+      ? `Parafe extension data missing required field(s): ${detail.join(', ')}.`
+      : detail;
+    super(msg);
     this.name = 'MissingParafeExtensionError';
   }
 }
@@ -46,7 +46,7 @@ export class ExpiredConsentTokenError extends Error {
 }
 
 /**
- * Thrown when a consent token does not cover a required scope.
+ * Thrown when a consent token does not cover a required action.
  */
 export class ScopeViolationError extends Error {
   readonly code = 'SCOPE_VIOLATION';
@@ -62,5 +62,22 @@ export class ScopeViolationError extends Error {
     this.name = 'ScopeViolationError';
     this.requiredScope = requiredScope;
     this.grantedScopes = grantedScopes;
+  }
+}
+
+/**
+ * Thrown when a DataPart key is present but the payload structure is invalid.
+ */
+export class MalformedDataPartError extends Error {
+  readonly code = 'MALFORMED_DATA_PART';
+  readonly dataPartType: string;
+
+  constructor(dataPartType: string, detail?: string) {
+    super(
+      `Malformed Parafe DataPart "${dataPartType}"${detail ? `: ${detail}` : '.'}` +
+        ' The DataPart key is present but the payload is missing required fields.'
+    );
+    this.name = 'MalformedDataPartError';
+    this.dataPartType = dataPartType;
   }
 }

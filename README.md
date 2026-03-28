@@ -1,6 +1,6 @@
 # @getparafe/a2a-extension
 
-Parafe trust extension for the [Google A2A protocol](https://google.github.io/A2A/). Adds cryptographic agent identity and scoped consent verification to A2A agent-to-agent communication.
+Parafe trust extension for the [Google A2A protocol](https://google.github.io/A2A/). Adds cryptographic agent identity, scoped consent, and handshake lifecycle to A2A agent-to-agent communication via DataParts.
 
 ```
 npm install @getparafe/a2a-extension
@@ -10,27 +10,15 @@ npm install @getparafe/a2a-extension
 
 ## Overview
 
-This extension defines how to add Parafe's cryptographic trust layer to A2A agent communication. When an agent sends a task to another agent, it attaches a **Parafe consent token** — a broker-signed JWT that proves who the requester is, what it is permitted to do, and that it was mutually authenticated before this request was made.
+This extension defines how to add Parafe's cryptographic trust layer to A2A agent communication. Trust data flows as **A2A DataParts** inside the message `parts[]` array — the same pattern used by A2A's built-in data types.
 
-The receiving agent verifies the token using the Parafe broker's **published Ed25519 public key** — no round-trip to a central server required.
+Three DataPart types cover the full trust lifecycle:
 
-```
-Agent A                            Agent B
-  │                                   │
-  │── A2A request ──────────────────▶ │
-  │   X-A2A-Extensions: parafe/v1     │
-  │   metadata:                       │
-  │     agent-id: agent_abc           │  extractExtensionMetadata()
-  │     consent-token: eyJ...         │  verifyConsentTokenOffline()
-  │     session-id: sess_xyz          │       │
-  │                                   │       ▼
-  │                                   │  Verify Ed25519 signature
-  │                                   │  using Parafe public key
-  │                                   │  (no network call needed)
-  │                                   │       │
-  │◀── A2A response ─────────────────  │       ▼
-  │   X-A2A-Extensions: parafe/v1     │  Claims: { sub, scope, exp }
-```
+| DataPart | When used | Direction |
+|---|---|---|
+| `parafe.handshake.Challenge` | Handshake initiation | Initiator → Target |
+| `parafe.handshake.Complete` | Handshake completion | Target → Initiator |
+| `parafe.trust.ConsentToken` | Every message during direct exchange | Both directions |
 
 ---
 
@@ -42,15 +30,33 @@ This is the only URI accepted for this extension.
 
 ---
 
-## Message Metadata Fields
+## Agent Card Format
 
-Messages from the client agent MUST include the following metadata fields in `params.metadata`:
+Agents that require Parafe trust declare the extension in their AgentCard with scope requirements:
 
-| Field | Key |
-|---|---|
-| Agent ID | `https://github.com/getparafe/parafe-a2a-extension/v1/agent-id` |
-| Consent Token | `https://github.com/getparafe/parafe-a2a-extension/v1/consent-token` |
-| Session ID | `https://github.com/getparafe/parafe-a2a-extension/v1/session-id` *(recommended)* |
+```json
+{
+  "uri": "https://github.com/getparafe/parafe-a2a-extension/v1",
+  "required": true,
+  "params": {
+    "agent_id": "prf_agent_donuts01",
+    "broker_url": "https://api.parafe.ai",
+    "minimum_identity_assurance": "self_registered",
+    "scope_requirements": {
+      "check-menu": {
+        "permissions": ["read_menu", "read_availability"],
+        "minimum_authorization_modality": "autonomous"
+      },
+      "order-donuts": {
+        "permissions": ["read_menu", "create_order", "process_payment"],
+        "minimum_authorization_modality": "attested"
+      }
+    }
+  }
+}
+```
+
+This tells discovering agents: which broker to use, what scopes are available, and what authorization level each scope requires.
 
 ---
 
@@ -58,19 +64,22 @@ Messages from the client agent MUST include the following metadata fields in `pa
 
 ### Client agent MUST:
 
-1. Register with the Parafe broker and obtain an agent ID and Ed25519 credential (via [platform.parafe.ai](https://platform.parafe.ai) or the [Parafe SDK](https://github.com/getparafe/sdk))
-2. Perform a Parafe mutual handshake with the target agent to obtain a session ID and consent token
-3. Activate this extension via the `X-A2A-Extensions` header (or gRPC metadata value)
-4. Include all required metadata fields in `params.metadata`
+1. Fetch the target's AgentCard and discover the Parafe extension entry
+2. Register with the Parafe broker (via the [Parafe SDK](https://github.com/getparafe/sdk) or raw API)
+3. Initiate a handshake with the broker, receive a challenge nonce
+4. Send the challenge to the target as a `parafe.handshake.Challenge` DataPart
+5. Receive the consent token from the target as a `parafe.handshake.Complete` DataPart
+6. Include a `parafe.trust.ConsentToken` DataPart in every subsequent message
 
 ### Server agent MUST:
 
-1. Validate that all required metadata fields are present — if any are missing, return an error
-2. Verify the consent token using either:
-   - **Offline:** the Parafe broker's published Ed25519 public key at `https://api.parafe.ai/public-key` (recommended — no network call required)
-   - **Online:** the Parafe broker's `/consent/verify` endpoint
-3. If verification fails, return an error
-4. If verification passes, process the task and echo the `X-A2A-Extensions` header on the response
+1. Declare the Parafe extension in its AgentCard with scope requirements
+2. Extract and validate `parafe.handshake.Challenge` DataParts from incoming messages
+3. Sign the challenge with its private key and complete the handshake with the broker
+4. Return the consent token as a `parafe.handshake.Complete` DataPart
+5. On every subsequent message, extract and verify the `parafe.trust.ConsentToken` DataPart
+6. Verify offline using the broker's Ed25519 public key (recommended) or online via `/consent/verify`
+7. If verification fails, reject the message
 
 ---
 
@@ -85,13 +94,11 @@ Clients activate this extension by including the Extension URI via the transport
 
 ## Why Offline Verification
 
-Most agent trust layers route every verification through their own server. If that server is slow, down, or compromised, your agents are blocked.
-
 Parafe consent tokens are **self-contained JWTs signed by the broker's Ed25519 key**. Fetch the broker's public key once at startup, cache it, and verify every token locally. No server call needed per request.
 
 - Zero latency overhead per request
 - No runtime dependency on Parafe's availability for verification
-- The token is independently verifiable by anyone with the public key
+- Independently verifiable by anyone with the public key
 
 ---
 
@@ -101,81 +108,139 @@ Before using this extension, you need:
 
 1. A Parafe account — sign up at [platform.parafe.ai](https://platform.parafe.ai)
 2. A registered agent with an Ed25519 key pair (via the [Parafe SDK](https://github.com/getparafe/sdk))
-3. A consent token minted via the Parafe SDK's handshake flow
+3. A handshake completed via the Parafe SDK to obtain a consent token
 
 ---
 
 ## Usage
 
-### Requesting Agent (sending tasks)
+### Declaring the Extension (AgentCard)
+
+```typescript
+import { buildAgentCardExtension } from '@getparafe/a2a-extension';
+
+const agentCard = {
+  name: 'Agent Donuts',
+  capabilities: {
+    extensions: [
+      buildAgentCardExtension({
+        agentId: 'prf_agent_donuts01',
+        scopeRequirements: {
+          'check-menu': {
+            permissions: ['read_menu', 'read_availability'],
+            minimum_authorization_modality: 'autonomous',
+          },
+          'order-donuts': {
+            permissions: ['read_menu', 'create_order', 'process_payment'],
+            minimum_authorization_modality: 'attested',
+          },
+        },
+      }),
+    ],
+  },
+};
+```
+
+### Discovering Parafe Requirements
+
+```typescript
+import { parseAgentCardExtension } from '@getparafe/a2a-extension';
+
+const agentCard = await fetchAgentCard('https://agentdonuts.com/.well-known/agent.json');
+const parafe = parseAgentCardExtension(agentCard.capabilities.extensions);
+
+if (parafe) {
+  console.log('Broker URL:', parafe.params.broker_url);
+  console.log('Target agent:', parafe.params.agent_id);
+  console.log('Scopes:', Object.keys(parafe.params.scope_requirements));
+}
+```
+
+### Initiating a Handshake (Requesting Agent)
 
 ```typescript
 import { ParafeClient } from '@getparafe/sdk';
-import {
-  buildExtensionMetadata,
-  getAgentCardExtension,
-  activationHeaderValue,
-} from '@getparafe/a2a-extension';
+import { buildHandshakeChallenge } from '@getparafe/a2a-extension';
 
-// 1. Initialize Parafe and load your agent credentials
-const parafe = new ParafeClient({
-  brokerUrl: 'https://api.parafe.ai',
-  apiKey: 'prf_key_live_...',
-});
-await parafe.loadCredentials('./parafe-credentials.enc', 'your-passphrase');
-
-// 2. Declare the extension in your AgentCard
-const agentCard = {
-  name: 'My Agent',
-  capabilities: {
-    extensions: [getAgentCardExtension()],
-  },
-};
-
-// 3. Perform a Parafe handshake with the target agent to get a session + consent token
+// 1. Perform the handshake with the Parafe broker
 const { handshakeId, challengeForTarget } = await parafe.handshake({
-  targetAgentId: 'prf_agent_target_id',  // The agent you're about to call via A2A
-  scope: 'your-scope',
-  permissions: ['read:data'],
-  authorization: ParafeClient.authorization.autonomous(),
+  targetAgentId: parafe.params.agent_id,
+  scope: 'order-donuts',
+  permissions: ['read_menu', 'create_order'],
+  authorization: ParafeClient.authorization.attested({
+    instruction: 'go get me donuts',
+    platform: 'whatsapp',
+  }),
 });
 
-// Send handshakeId + challengeForTarget to the target agent out-of-band,
-// then receive back their completed handshake response.
-// (How you exchange this depends on your transport — HTTP, message queue, etc.)
-
-const { sessionId, consentToken } = await parafe.completeHandshake({
-  handshakeId,
-  challengeNonce: challengeForTarget,
-});
-
-// 4. Build the Parafe metadata and attach it to your A2A request
-const parafeMetadata = buildExtensionMetadata({
-  agentId: parafe.credentialStatus().agentId,
-  consentToken: consentToken.token,
-  sessionId, // strongly recommended — enables audit trail and signed receipts
-});
-
-// 5. Send the A2A task with Parafe trust metadata
-await a2aClient.sendTask({
-  params: {
-    metadata: { ...parafeMetadata },
-    // ...rest of your task params
-  },
-  headers: {
-    'X-A2A-Extensions': activationHeaderValue,
-  },
-});
+// 2. Send the challenge to the target as an A2A DataPart
+const message = {
+  role: 'user',
+  parts: [
+    buildHandshakeChallenge({
+      handshake_id: handshakeId,
+      challenge: challengeForTarget,
+      initiator_agent_id: parafe.credentialStatus().agentId,
+      broker_url: 'https://api.parafe.ai',
+      requested_scope: 'order-donuts',
+    }),
+  ],
+};
 ```
 
----
-
-### Executing Agent (receiving tasks)
+### Completing a Handshake (Receiving Agent)
 
 ```typescript
 import {
-  extractExtensionMetadata,
-  verifyConsentTokenOffline,
+  extractHandshakeChallenge,
+  buildHandshakeComplete,
+} from '@getparafe/a2a-extension';
+
+// 1. Extract the challenge from the incoming A2A message
+const challenge = extractHandshakeChallenge(incomingMessage.parts);
+if (!challenge) {
+  // Not a handshake message — handle normally
+}
+
+// 2. Sign the challenge and complete with the broker (via SDK)
+const { sessionId, consentToken } = await parafe.completeHandshake({
+  handshakeId: challenge.handshake_id,
+  challengeNonce: challenge.challenge,
+});
+
+// 3. Send the consent token back as an A2A DataPart
+const response = {
+  role: 'agent',
+  parts: [
+    buildHandshakeComplete({
+      handshake_id: challenge.handshake_id,
+      status: 'authenticated',
+      consent_token: consentToken.token,
+    }),
+  ],
+};
+```
+
+### Sending Messages with Trust (Direct Exchange)
+
+```typescript
+import { buildConsentTokenPart } from '@getparafe/a2a-extension';
+
+// Include the consent token DataPart in every message
+const message = {
+  role: 'user',
+  parts: [
+    buildConsentTokenPart(consentToken.token, sessionId),
+    { kind: 'text', text: "I'd like 2 dozen assorted donuts delivered by 2pm." },
+  ],
+};
+```
+
+### Verifying Incoming Messages
+
+```typescript
+import {
+  verifyMessageConsentToken,
   fetchBrokerPublicKey,
   MissingParafeExtensionError,
   InvalidConsentTokenError,
@@ -186,31 +251,27 @@ import {
 // At startup — fetch and cache the broker public key
 const brokerPublicKey = await fetchBrokerPublicKey();
 
-// On each incoming A2A task
-async function handleTask(task) {
-  // 1. Extract Parafe fields from metadata
-  let parafe;
+// On each incoming message — extract + verify in one step
+async function handleMessage(message) {
   try {
-    parafe = extractExtensionMetadata(task.params.metadata ?? {});
+    const { claims, sessionId } = await verifyMessageConsentToken(
+      message.parts,
+      brokerPublicKey,
+      'create_order' // optional: assert a required action
+    );
+
+    console.log('Scope:', claims.scope);                     // "order-donuts"
+    console.log('Permissions:', claims.permissions);          // ["read_menu", "create_order"]
+    console.log('Authorization:', claims.authorization_modality); // "attested"
+    console.log('Session:', sessionId);
+
+    // Token verified — process the message
   } catch (err) {
     if (err instanceof MissingParafeExtensionError) {
-      // Request has no Parafe metadata — reject or handle as untrusted
       return { error: 'Parafe trust extension required' };
     }
-    throw err;
-  }
-
-  // 2. Verify the consent token offline
-  let claims;
-  try {
-    claims = await verifyConsentTokenOffline(
-      parafe.consentToken,
-      brokerPublicKey,
-      'read_bookings' // optional: assert a required action is permitted
-    );
-  } catch (err) {
     if (err instanceof ExpiredConsentTokenError) {
-      return { error: 'Consent token expired — request a new one' };
+      return { error: 'Consent token expired' };
     }
     if (err instanceof InvalidConsentTokenError) {
       return { error: 'Invalid consent token' };
@@ -220,19 +281,8 @@ async function handleTask(task) {
     }
     throw err;
   }
-
-  // 3. claims is now verified — proceed with the task
-  console.log('Scope:', claims.scope);                          // "flight-rebooking"
-  console.log('Permissions:', claims.permissions);               // ["read_bookings", ...]
-  console.log('Initiator:', claims.initiator_agent_id);          // "prf_agent_..."
-  console.log('Authorization:', claims.authorization_modality);  // "autonomous"
-  console.log('Session:', parafe.sessionId);
-
-  // ... do the work
 }
 ```
-
----
 
 ### Online Verification (optional)
 
@@ -241,10 +291,9 @@ For high-value actions where you want real-time confirmation from the broker:
 ```typescript
 import { verifyConsentTokenOnline } from '@getparafe/a2a-extension';
 
-const result = await verifyConsentTokenOnline(parafe.consentToken, {
-  action: 'read_bookings',
-  sessionId: parafe.sessionId,
-  brokerUrl: 'https://api.parafe.ai', // optional, defaults to this
+const result = await verifyConsentTokenOnline(consentToken.token, {
+  action: 'process_payment',
+  sessionId: sessionId,
 });
 // result.valid, result.permitted, result.action, result.expiresAt
 ```
@@ -253,31 +302,63 @@ const result = await verifyConsentTokenOnline(parafe.consentToken, {
 
 ## API Reference
 
-### Requester
+### DataPart Builders
 
-| Export | Description |
+| Function | Returns |
 |---|---|
-| `buildExtensionMetadata(options)` | Returns namespaced metadata fields for `params.metadata` |
-| `getAgentCardExtension()` | Returns the AgentCard `capabilities.extensions[]` entry |
-| `activationHeaderValue` | String value for the `X-A2A-Extensions` header |
+| `buildHandshakeChallenge(payload)` | `HandshakeChallengeDataPart` |
+| `buildHandshakeComplete(payload)` | `HandshakeCompleteDataPart` |
+| `buildConsentTokenPart(token, sessionId)` | `ConsentTokenDataPart` |
 
-### Executor
+### DataPart Parsers
 
-| Export | Description |
+| Function | Returns |
 |---|---|
-| `extractExtensionMetadata(metadata)` | Extracts Parafe fields; throws `MissingParafeExtensionError` if absent |
-| `verifyConsentTokenOffline(token, publicKey, action?)` | Verifies Ed25519 JWT signature locally — no network call |
-| `verifyConsentTokenOnline(token, options)` | Verifies via broker's `/consent/verify` endpoint (requires action + sessionId) |
-| `fetchBrokerPublicKey(brokerUrl?)` | Fetches broker's Ed25519 public key for offline verification |
+| `extractHandshakeChallenge(parts)` | `HandshakeChallengePayload \| null` |
+| `extractHandshakeComplete(parts)` | `HandshakeCompletePayload \| null` |
+| `extractConsentToken(parts)` | `ConsentTokenPayload \| null` |
+| `hasParafeDataPart(parts)` | `boolean` |
+
+### AgentCard
+
+| Function | Returns |
+|---|---|
+| `buildAgentCardExtension(options)` | `ParafeAgentCardExtension` |
+| `parseAgentCardExtension(extensions)` | `ParafeAgentCardExtension \| null` |
+
+### Verification
+
+| Function | Description |
+|---|---|
+| `verifyMessageConsentToken(parts, publicKey, action?)` | Extract + verify consent token from message parts |
+| `verifyConsentTokenOffline(token, publicKey, action?)` | Verify Ed25519 JWT signature locally |
+| `verifyConsentTokenOnline(token, options)` | Verify via broker's `/consent/verify` endpoint |
+| `fetchBrokerPublicKey(brokerUrl?)` | Fetch broker's Ed25519 public key |
 
 ### Errors
 
 | Error | Code | When thrown |
 |---|---|---|
-| `MissingParafeExtensionError` | `MISSING_PARAFE_EXTENSION` | Required metadata fields absent |
+| `MissingParafeExtensionError` | `MISSING_PARAFE_EXTENSION` | Required DataPart absent |
 | `InvalidConsentTokenError` | `INVALID_CONSENT_TOKEN` | Signature invalid or JWT malformed |
 | `ExpiredConsentTokenError` | `EXPIRED_CONSENT_TOKEN` | Token past expiry |
-| `ScopeViolationError` | `SCOPE_VIOLATION` | Token does not cover required scope |
+| `ScopeViolationError` | `SCOPE_VIOLATION` | Action not permitted or excluded |
+| `MalformedDataPartError` | `MALFORMED_DATA_PART` | DataPart key present but payload invalid |
+
+---
+
+## Migration from v0.2.0
+
+v1.0.0 replaces `params.metadata` with A2A DataParts. For backwards compatibility during migration:
+
+```typescript
+import {
+  buildExtensionMetadata,
+  extractExtensionMetadata,
+} from '@getparafe/a2a-extension/compat';
+```
+
+The compat module is deprecated and will be removed in v2.0.0.
 
 ---
 

@@ -7,17 +7,12 @@ export const PARAFE_EXTENSION_URI =
   'https://github.com/getparafe/parafe-a2a-extension/v1';
 
 /**
- * Metadata field names — namespaced under the extension URI per A2A spec.
- * These are the keys used in params.metadata on A2A requests.
+ * A2A DataPart type keys — these are the keys inside the `data` object of DataParts.
+ * Used when building and parsing Parafe-specific DataParts in A2A messages.
  */
-export const PARAFE_AGENT_ID_FIELD = `${PARAFE_EXTENSION_URI}/agent-id`;
-export const PARAFE_CONSENT_TOKEN_FIELD = `${PARAFE_EXTENSION_URI}/consent-token`;
-export const PARAFE_SESSION_ID_FIELD = `${PARAFE_EXTENSION_URI}/session-id`;
-
-/**
- * The value for the X-A2A-Extensions header that activates this extension.
- */
-export const PARAFE_ACTIVATION_HEADER_VALUE = PARAFE_EXTENSION_URI;
+export const PARAFE_HANDSHAKE_CHALLENGE = 'parafe.handshake.Challenge';
+export const PARAFE_HANDSHAKE_COMPLETE = 'parafe.handshake.Complete';
+export const PARAFE_TRUST_CONSENT_TOKEN = 'parafe.trust.ConsentToken';
 
 /**
  * Default Parafe broker URL.

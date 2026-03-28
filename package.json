@@ -1,7 +1,7 @@
 {
   "name": "@getparafe/a2a-extension",
-  "version": "0.2.0",
-  "description": "Parafe trust extension for the Google A2A protocol — cryptographic agent identity and consent verification",
+  "version": "1.0.0",
+  "description": "Parafe trust extension for the Google A2A protocol — cryptographic agent identity, scoped consent, and handshake lifecycle via A2A DataParts",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -11,14 +11,19 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./compat": {
+      "types": "./dist/compat/index.d.ts",
+      "import": "./dist/compat/index.js",
+      "require": "./dist/compat/index.cjs"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm,cjs --dts",
-    "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
+    "build": "tsup src/index.ts src/compat/index.ts --format esm,cjs --dts",
+    "dev": "tsup src/index.ts src/compat/index.ts --format esm,cjs --dts --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
@@ -34,7 +39,8 @@
     "consent",
     "agent",
     "ai",
-    "google-a2a"
+    "google-a2a",
+    "datapart"
   ],
   "author": "Parafe <hello@parafe.ai>",
   "license": "MIT",
