@@ -8,13 +8,9 @@ npm install @getparafe/a2a-extension
 
 ---
 
-## What This Does
+## Overview
 
-When Agent A delegates a task to Agent B over A2A, neither agent has a standard way to verify the other's identity or enforce what the other is permitted to do. This extension solves that by attaching a **Parafe consent token** to the A2A request — a broker-signed JWT that proves:
-
-- Who the requesting agent is (cryptographically verified identity)
-- What it is allowed to do (scoped permissions, set at registration time)
-- That it was authenticated before this request was made
+This extension defines how to add Parafe's cryptographic trust layer to A2A agent communication. When an agent sends a task to another agent, it attaches a **Parafe consent token** — a broker-signed JWT that proves who the requester is, what it is permitted to do, and that it was mutually authenticated before this request was made.
 
 The receiving agent verifies the token using the Parafe broker's **published Ed25519 public key** — no round-trip to a central server required.
 
@@ -38,16 +34,64 @@ Agent A                            Agent B
 
 ---
 
-## Why Offline Verification Matters
+## Extension URI
+
+The URI of this extension is `https://github.com/getparafe/parafe-a2a-extension/v1`.
+
+This is the only URI accepted for this extension.
+
+---
+
+## Message Metadata Fields
+
+Messages from the client agent MUST include the following metadata fields in `params.metadata`:
+
+| Field | Key |
+|---|---|
+| Agent ID | `https://github.com/getparafe/parafe-a2a-extension/v1/agent-id` |
+| Consent Token | `https://github.com/getparafe/parafe-a2a-extension/v1/consent-token` |
+| Session ID | `https://github.com/getparafe/parafe-a2a-extension/v1/session-id` *(recommended)* |
+
+---
+
+## Process
+
+### Client agent MUST:
+
+1. Register with the Parafe broker and obtain an agent ID and Ed25519 credential (via [platform.parafe.ai](https://platform.parafe.ai) or the [Parafe SDK](https://github.com/getparafe/sdk))
+2. Perform a Parafe mutual handshake with the target agent to obtain a session ID and consent token
+3. Activate this extension via the `X-A2A-Extensions` header (or gRPC metadata value)
+4. Include all required metadata fields in `params.metadata`
+
+### Server agent MUST:
+
+1. Validate that all required metadata fields are present — if any are missing, return an error
+2. Verify the consent token using either:
+   - **Offline:** the Parafe broker's published Ed25519 public key at `https://api.parafe.ai/public-key` (recommended — no network call required)
+   - **Online:** the Parafe broker's `/consent/verify` endpoint
+3. If verification fails, return an error
+4. If verification passes, process the task and echo the `X-A2A-Extensions` header on the response
+
+---
+
+## Extension Activation
+
+Clients activate this extension by including the Extension URI via the transport-defined mechanism:
+
+- **JSON-RPC / HTTP:** set the `X-A2A-Extensions` HTTP header to the Extension URI
+- **gRPC:** set `X-A2A-Extensions` as a metadata value
+
+---
+
+## Why Offline Verification
 
 Most agent trust layers route every verification through their own server. If that server is slow, down, or compromised, your agents are blocked.
 
-Parafe consent tokens are **self-contained JWTs signed by the broker's Ed25519 key**. You fetch the broker's public key once at startup, cache it, and verify every token locally from then on. The broker's public key is available at `https://api.parafe.ai/public-key`.
+Parafe consent tokens are **self-contained JWTs signed by the broker's Ed25519 key**. Fetch the broker's public key once at startup, cache it, and verify every token locally. No server call needed per request.
 
-This means:
 - Zero latency overhead per request
 - No runtime dependency on Parafe's availability for verification
-- The token is still independently verifiable — anyone with the public key can check it
+- The token is independently verifiable by anyone with the public key
 
 ---
 
@@ -230,26 +274,6 @@ const claims = await verifyConsentTokenOnline(parafe.consentToken, {
 | `InvalidConsentTokenError` | `INVALID_CONSENT_TOKEN` | Signature invalid or JWT malformed |
 | `ExpiredConsentTokenError` | `EXPIRED_CONSENT_TOKEN` | Token past expiry |
 | `ScopeViolationError` | `SCOPE_VIOLATION` | Token does not cover required scope |
-
-### Constants
-
-| Constant | Value |
-|---|---|
-| `PARAFE_EXTENSION_URI` | `https://github.com/getparafe/parafe-a2a-extension/v1` |
-| `PARAFE_AGENT_ID_FIELD` | `…/v1/agent-id` |
-| `PARAFE_CONSENT_TOKEN_FIELD` | `…/v1/consent-token` |
-| `PARAFE_SESSION_ID_FIELD` | `…/v1/session-id` |
-
----
-
-## A2A Extension Protocol
-
-This package follows the [A2A extension specification](https://google.github.io/A2A/):
-
-- The extension URI is declared in the agent's AgentCard under `capabilities.extensions[]`
-- Clients activate the extension by setting `X-A2A-Extensions: <URI>` on the request
-- Extension data is namespaced under the URI in `params.metadata`
-- The server echoes the `X-A2A-Extensions` header on success
 
 ---
 
