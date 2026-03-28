@@ -66,13 +66,21 @@ Before using this extension, you need:
 ### Requesting Agent (sending tasks)
 
 ```typescript
+import { ParafeClient } from '@getparafe/sdk';
 import {
   buildExtensionMetadata,
   getAgentCardExtension,
   activationHeaderValue,
 } from '@getparafe/a2a-extension';
 
-// 1. Declare the extension in your AgentCard
+// 1. Initialize Parafe and load your agent credentials
+const parafe = new ParafeClient({
+  brokerUrl: 'https://api.parafe.ai',
+  apiKey: 'prf_key_live_...',
+});
+await parafe.loadCredentials('./parafe-credentials.enc', 'your-passphrase');
+
+// 2. Declare the extension in your AgentCard
 const agentCard = {
   name: 'My Agent',
   capabilities: {
@@ -80,18 +88,31 @@ const agentCard = {
   },
 };
 
-// 2. Before sending a task, mint a consent token via the Parafe SDK
-// (see @getparafe/sdk for handshake + consent flow)
-const { consentToken, sessionId } = await parafeClient.getConsentToken(...);
-
-// 3. Build the metadata and attach it to your A2A request
-const parafeMetadata = buildExtensionMetadata({
-  agentId: 'agent_your_id_here',
-  consentToken,
-  sessionId, // recommended — enables audit trail and signed receipts
+// 3. Perform a Parafe handshake with the target agent to get a session + consent token
+const { handshakeId, challengeForTarget } = await parafe.handshake({
+  targetAgentId: 'prf_agent_target_id',  // The agent you're about to call via A2A
+  scope: 'your-scope',
+  permissions: ['read:data'],
+  authorization: ParafeClient.authorization.autonomous(),
 });
 
-// 4. Merge into params.metadata and set the activation header
+// Send handshakeId + challengeForTarget to the target agent out-of-band,
+// then receive back their completed handshake response.
+// (How you exchange this depends on your transport — HTTP, message queue, etc.)
+
+const { sessionId, consentToken } = await parafe.completeHandshake({
+  handshakeId,
+  challengeNonce: challengeForTarget,
+});
+
+// 4. Build the Parafe metadata and attach it to your A2A request
+const parafeMetadata = buildExtensionMetadata({
+  agentId: parafe.credentialStatus().agentId,
+  consentToken: consentToken.token,
+  sessionId, // strongly recommended — enables audit trail and signed receipts
+});
+
+// 5. Send the A2A task with Parafe trust metadata
 await a2aClient.sendTask({
   params: {
     metadata: { ...parafeMetadata },
