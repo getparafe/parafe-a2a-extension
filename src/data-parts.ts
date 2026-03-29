@@ -114,6 +114,15 @@ export function extractHandshakeChallenge(
     );
   }
 
+  // N-05: Validate challenge nonce format — broker generates 64-character hex strings.
+  const challenge = payload['challenge'] as string;
+  if (!/^[0-9a-f]{64}$/i.test(challenge)) {
+    throw new MalformedDataPartError(
+      PARAFE_HANDSHAKE_CHALLENGE,
+      `challenge nonce must be a 64-character hex string, got "${challenge.length > 128 ? challenge.slice(0, 128) + '...' : challenge}"`
+    );
+  }
+
   return payload as unknown as HandshakeChallengePayload;
 }
 

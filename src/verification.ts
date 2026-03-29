@@ -57,6 +57,22 @@ export async function verifyConsentTokenOffline(
     throw new InvalidConsentTokenError();
   }
 
+  // N-04: Runtime type guards — validate critical claim types before trusting the cast.
+  if (typeof claims.scope !== 'string') {
+    throw new InvalidConsentTokenError(
+      `Expected "scope" claim to be a string, got ${typeof claims.scope}`
+    );
+  }
+  if (!Array.isArray(claims.permissions)) {
+    throw new InvalidConsentTokenError(
+      `Expected "permissions" claim to be an array, got ${typeof claims.permissions}`
+    );
+  }
+  if (typeof claims.session_id !== 'string') {
+    throw new InvalidConsentTokenError(
+      `Expected "session_id" claim to be a string, got ${typeof claims.session_id}`
+    );
+  }
   if (claims.token_type !== 'consent') {
     throw new InvalidConsentTokenError(
       `Expected token_type "consent", got "${String(claims.token_type)}"`
@@ -82,6 +98,18 @@ export async function verifyConsentTokenOnline(
   options: VerifyOnlineOptions
 ): Promise<ConsentVerifyResult> {
   const brokerUrl = options.brokerUrl ?? DEFAULT_BROKER_URL;
+
+  // N-06: Warn when broker URL is not HTTPS (except localhost for dev).
+  if (
+    !brokerUrl.startsWith('https://') &&
+    !brokerUrl.startsWith('http://localhost') &&
+    !brokerUrl.startsWith('http://127.0.0.1')
+  ) {
+    console.warn(
+      `[parafe] Broker URL "${brokerUrl}" does not use HTTPS. ` +
+        'Online consent verification is being sent over an unencrypted connection.'
+    );
+  }
 
   let sessionId = options.sessionId;
   if (sessionId === undefined) {

@@ -78,7 +78,7 @@ describe('extractHandshakeChallenge', () => {
     const parts: A2AMessagePart[] = [
       buildHandshakeChallenge({
         handshake_id: 'hs_abc123',
-        challenge: '9f4a',
+        challenge: '9f4a3b2c1d0e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a',
         initiator_agent_id: 'prf_agent_1',
         broker_url: 'https://api.parafe.ai',
         requested_scope: 'test',
