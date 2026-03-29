@@ -82,6 +82,15 @@ export function parseAgentCardExtension(
   const scopeReqs = params['scope_requirements'];
   if (!scopeReqs || typeof scopeReqs !== 'object') return null;
 
+  // Validate scope requirements have valid modality values
+  const validModalities = new Set(['autonomous', 'attested', 'verified']);
+  for (const [, req] of Object.entries(scopeReqs as Record<string, Record<string, unknown>>)) {
+    if (!req || typeof req !== 'object') return null;
+    if (!Array.isArray(req['permissions'])) return null;
+    const modality = req['minimum_authorization_modality'];
+    if (modality !== undefined && !validModalities.has(modality as string)) return null;
+  }
+
   return {
     uri: PARAFE_EXTENSION_URI,
     required: entry['required'] === true,

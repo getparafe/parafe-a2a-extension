@@ -131,11 +131,18 @@ export async function verifyConsentTokenOnline(
     throw new ScopeViolationError(options.action, [reason]);
   }
 
+  // Validate required fields in broker response
+  if (typeof body['valid'] !== 'boolean' || typeof body['permitted'] !== 'boolean' || typeof body['action'] !== 'string') {
+    throw new InvalidConsentTokenError(
+      `Unexpected response from broker /consent/verify — missing or invalid fields (valid: ${typeof body['valid']}, permitted: ${typeof body['permitted']}, action: ${typeof body['action']})`
+    );
+  }
+
   return {
-    valid: body['valid'] as boolean,
-    permitted: body['permitted'] as boolean,
-    action: body['action'] as string,
-    sessionId: body['session_id'] as string,
+    valid: body['valid'],
+    permitted: body['permitted'],
+    action: body['action'],
+    sessionId: typeof body['session_id'] === 'string' ? body['session_id'] : sessionId,
     expiresAt: typeof body['expires_at'] === 'string' ? body['expires_at'] : undefined,
   };
 }
@@ -221,6 +228,9 @@ export async function verifyMessageConsentToken(
 }
 
 function derBase64ToPem(base64: string): string {
+  if (!/^[A-Za-z0-9+/]+=*$/.test(base64)) {
+    throw new Error('Invalid base64 encoding in public key');
+  }
   const lines: string[] = [];
   for (let i = 0; i < base64.length; i += 64) {
     lines.push(base64.slice(i, i + 64));
