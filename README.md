@@ -40,6 +40,7 @@ Agents that require Parafe trust declare the extension in their AgentCard with s
   "required": true,
   "params": {
     "agent_id": "prf_agent_donuts01",
+    "agent_did": "did:web:api.parafe.ai:agents:prf_agent_donuts01",
     "broker_url": "https://api.parafe.ai",
     "minimum_identity_assurance": "self_registered",
     "scope_requirements": {
@@ -94,7 +95,7 @@ Clients activate this extension by including the Extension URI via the transport
 
 ## Why Offline Verification
 
-Parafe consent tokens are **self-contained JWTs signed by the broker's Ed25519 key**. Fetch the broker's public key once at startup, cache it, and verify every token locally. No server call needed per request.
+Parafe consent tokens are **W3C Verifiable Digital Credentials (VDCs)** — self-contained JWTs signed by the broker's Ed25519 key. Fetch the broker's public key once at startup, cache it, and verify every token locally. No server call needed per request.
 
 - Zero latency overhead per request
 - No runtime dependency on Parafe's availability for verification
