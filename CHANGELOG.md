@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0 (unreleased)
+## 2.0.0 (2026-09-27)
 
 Follows A2A protocol 1.0. Breaking. See "Migrating from 1.x" in the README.
 
