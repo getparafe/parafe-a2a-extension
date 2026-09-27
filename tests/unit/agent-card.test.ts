@@ -3,6 +3,7 @@ import {
   buildAgentCardExtension,
   parseAgentCardExtension,
   PARAFE_EXTENSION_URI,
+  PARAFE_EXTENSION_URI_V1,
   DEFAULT_BROKER_URL,
 } from '../../src/index.js';
 
@@ -22,6 +23,7 @@ describe('buildAgentCardExtension', () => {
     const ext = buildAgentCardExtension({
       agentId: 'prf_agent_donuts01',
       scopeRequirements,
+      required: true,
     });
 
     expect(ext.uri).toBe(PARAFE_EXTENSION_URI);
@@ -36,6 +38,7 @@ describe('buildAgentCardExtension', () => {
     const ext = buildAgentCardExtension({
       agentId: 'prf_agent_1',
       scopeRequirements,
+      required: true,
       brokerUrl: 'https://custom-broker.example.com',
     });
 
@@ -46,6 +49,7 @@ describe('buildAgentCardExtension', () => {
     const ext = buildAgentCardExtension({
       agentId: 'prf_agent_1',
       scopeRequirements,
+      required: true,
       minimumIdentityAssurance: 'registered',
     });
 
@@ -66,6 +70,7 @@ describe('buildAgentCardExtension', () => {
     const ext = buildAgentCardExtension({
       agentId: 'prf_agent_1',
       scopeRequirements,
+      required: true,
       description: 'Custom description',
     });
 
@@ -76,6 +81,7 @@ describe('buildAgentCardExtension', () => {
     const ext = buildAgentCardExtension({
       agentId: 'prf_agent_1',
       scopeRequirements,
+      required: true,
     });
 
     expect(ext.description).toBeUndefined();
@@ -83,6 +89,33 @@ describe('buildAgentCardExtension', () => {
 });
 
 describe('parseAgentCardExtension', () => {
+  const params = {
+    agent_id: 'prf_agent_donuts01',
+    broker_url: 'https://api.parafe.ai',
+    minimum_identity_assurance: 'self_registered',
+    scope_requirements: { 'check-menu': { permissions: ['read_menu'], minimum_authorization_modality: 'autonomous' } },
+  };
+
+  it('recognizes a v1 card and reports the v1 URI', () => {
+    const result = parseAgentCardExtension([{ uri: PARAFE_EXTENSION_URI_V1, required: true, params }]);
+    expect(result?.uri).toBe(PARAFE_EXTENSION_URI_V1);
+    expect(result?.params.agent_id).toBe('prf_agent_donuts01');
+  });
+
+  it('prefers the v2 entry when a card lists both', () => {
+    const result = parseAgentCardExtension([
+      { uri: PARAFE_EXTENSION_URI_V1, required: true, params: { ...params, agent_id: 'prf_agent_v1' } },
+      { uri: PARAFE_EXTENSION_URI, required: false, params: { ...params, agent_id: 'prf_agent_v2' } },
+    ]);
+    expect(result?.uri).toBe(PARAFE_EXTENSION_URI);
+    expect(result?.params.agent_id).toBe('prf_agent_v2');
+  });
+
+  it('accepts a missing extensions list', () => {
+    expect(parseAgentCardExtension(undefined)).toBeNull();
+  });
+
+
   it('finds and parses a Parafe extension from mixed extensions array', () => {
     const extensions = [
       { uri: 'https://other.extension/v1', required: false },

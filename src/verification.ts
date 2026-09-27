@@ -1,15 +1,19 @@
 import { importSPKI, jwtVerify, decodeJwt } from 'jose';
 import { DEFAULT_BROKER_URL } from './constants.js';
-import { extractConsentToken } from './data-parts.js';
+import { extractConsentToken, type ReadParafeOptions } from './message.js';
 import {
   MissingParafeExtensionError,
   InvalidConsentTokenError,
   ExpiredConsentTokenError,
   ScopeViolationError,
+  WrongAudienceError,
 } from './errors.js';
 import type {
-  A2AMessagePart,
+  A2AMessageLike,
   ParafeConsentClaims,
+  ScopeRequirement,
+  VerifyConsentOptions,
+  VerifyMessageOptions,
   VerifyOnlineOptions,
 } from './types.js';
 
@@ -26,17 +30,19 @@ import type {
  * - Token has not expired
  * - Issuer is "parafe-trust-broker"
  * - Token type is "consent"
- * - Requested action is in permissions and not in excluded list (if requiredAction provided)
+ * - With options: token issued for `agentId`, belongs to `sessionId`, permits `action`,
+ *   and fits `scopeRequirements` (see VerifyConsentOptions)
  *
  * @param token - The consent token JWT string
  * @param brokerPublicKey - The broker's Ed25519 public key in PEM format (from fetchBrokerPublicKey)
- * @param requiredAction - Optional action that must be permitted by this token
+ * @param options - Extra checks, or just the action that must be permitted
  */
 export async function verifyConsentTokenOffline(
   token: string,
   brokerPublicKey: string,
-  requiredAction?: string
+  options: VerifyConsentOptions | string = {}
 ): Promise<ParafeConsentClaims> {
+  const checks: VerifyConsentOptions = typeof options === 'string' ? { action: options } : options;
   let claims: ParafeConsentClaims;
 
   try {
@@ -79,8 +85,25 @@ export async function verifyConsentTokenOffline(
     );
   }
 
-  if (requiredAction !== undefined) {
-    assertPermission(requiredAction, claims.permissions ?? [], claims.excluded ?? []);
+  if (claims.excluded !== undefined && !Array.isArray(claims.excluded)) {
+    throw new InvalidConsentTokenError(
+      `Expected "excluded" claim to be an array, got ${typeof claims.excluded}`
+    );
+  }
+
+  if (checks.agentId !== undefined && claims.target_agent_id !== checks.agentId) {
+    throw new WrongAudienceError(checks.agentId, claims.target_agent_id ?? null);
+  }
+  if (checks.sessionId !== undefined && claims.session_id !== checks.sessionId) {
+    throw new InvalidConsentTokenError(
+      `token belongs to session "${claims.session_id}", but the message says "${checks.sessionId}"`
+    );
+  }
+  if (checks.scopeRequirements !== undefined) {
+    assertWithinPolicy(claims, checks.scopeRequirements);
+  }
+  if (checks.action !== undefined) {
+    assertPermission(checks.action, claims.permissions, claims.excluded ?? []);
   }
 
   return claims;
@@ -166,6 +189,18 @@ export async function verifyConsentTokenOnline(
     );
   }
 
+  if (options.agentId !== undefined) {
+    let target: unknown;
+    try {
+      target = decodeJwt(token)['target_agent_id'];
+    } catch {
+      target = undefined;
+    }
+    if (target !== options.agentId) {
+      throw new WrongAudienceError(options.agentId, typeof target === 'string' ? target : null);
+    }
+  }
+
   return {
     valid: body['valid'],
     permitted: body['permitted'],
@@ -222,37 +257,37 @@ export async function fetchBrokerPublicKey(
 }
 
 /**
- * Convenience: extracts and verifies a consent token from A2A message parts in one step.
- * Combines extractConsentToken() from data-parts with verifyConsentTokenOffline().
+ * Extracts and verifies the consent token from an A2A message in one step:
+ * reads the Parafe data (see readParafe), verifies the token offline, and checks that
+ * it was issued for `agentId`, belongs to the session the message names, and permits
+ * `action` (if given).
  *
- * Throws MissingParafeExtensionError if no parafe.trust.ConsentToken DataPart is found.
+ * Throws MissingParafeExtensionError if the message carries no consent token.
  *
  * @example
- * const { claims, sessionId } = await verifyMessageConsentToken(
- *   incomingMessage.parts,
- *   brokerPublicKey,
- *   'read_bookings'
- * );
+ * const { claims, sessionId } = await verifyMessageConsentToken(ctx.userMessage, brokerPublicKey, {
+ *   agentId: MY_AGENT_ID,
+ *   action: 'create_order',
+ *   scopeRequirements: MY_SCOPES,
+ * });
  */
 export async function verifyMessageConsentToken(
-  parts: A2AMessagePart[],
+  message: A2AMessageLike,
   brokerPublicKey: string,
-  requiredAction?: string
+  options: VerifyMessageOptions & ReadParafeOptions
 ): Promise<{ claims: ParafeConsentClaims; sessionId: string }> {
-  const tokenPayload = extractConsentToken(parts);
-  if (tokenPayload === null) {
-    throw new MissingParafeExtensionError(
-      'No parafe.trust.ConsentToken DataPart found in message parts.'
-    );
+  const { acceptV1, ...checks } = options;
+  const consent = extractConsentToken(message, acceptV1 === undefined ? {} : { acceptV1 });
+  if (consent === null) {
+    throw new MissingParafeExtensionError('No Parafe consent token found in the message.');
   }
 
-  const claims = await verifyConsentTokenOffline(
-    tokenPayload.token,
-    brokerPublicKey,
-    requiredAction
-  );
+  const claims = await verifyConsentTokenOffline(consent.token, brokerPublicKey, {
+    ...checks,
+    sessionId: consent.session_id,
+  });
 
-  return { claims, sessionId: tokenPayload.session_id };
+  return { claims, sessionId: consent.session_id };
 }
 
 function derBase64ToPem(base64: string): string {
@@ -276,5 +311,31 @@ function assertPermission(
   }
   if (!permissions.includes(action)) {
     throw new ScopeViolationError(action, permissions);
+  }
+}
+
+const MODALITY_RANK = { autonomous: 0, attested: 1, verified: 2 } as const;
+
+function assertWithinPolicy(
+  claims: ParafeConsentClaims,
+  scopeRequirements: Record<string, ScopeRequirement>
+): void {
+  const scope = Object.prototype.hasOwnProperty.call(scopeRequirements, claims.scope)
+    ? scopeRequirements[claims.scope]
+    : undefined;
+  if (scope === undefined) {
+    throw new ScopeViolationError(claims.scope, Object.keys(scopeRequirements),
+      `Consent token is for scope "${claims.scope}", which this agent does not declare.`);
+  }
+  const outside = claims.permissions.filter((p) => !scope.permissions.includes(p));
+  if (outside.length > 0) {
+    throw new ScopeViolationError(outside, scope.permissions,
+      `Consent token grants permissions outside scope "${claims.scope}": ${outside.join(', ')}.`);
+  }
+  const have = MODALITY_RANK[claims.authorization_modality];
+  const need = MODALITY_RANK[scope.minimum_authorization_modality];
+  if (have === undefined || have < need) {
+    throw new ScopeViolationError(claims.scope, claims.permissions,
+      `Scope "${claims.scope}" requires "${scope.minimum_authorization_modality}" authorization, token has "${String(claims.authorization_modality)}".`);
   }
 }
