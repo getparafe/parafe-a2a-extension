@@ -43,7 +43,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/getparafe/parafe-a2a-extension.git"
+    "url": "git+https://github.com/getparafe/parafe-a2a-extension.git"
   },
   "homepage": "https://parafe.ai",
   "dependencies": {

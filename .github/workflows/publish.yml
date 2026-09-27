@@ -1,0 +1,60 @@
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    name: Build and Publish
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      # Refuse to publish if the release tag (e.g. v2.0.1) doesn't match package.json.
+      - name: Check release tag matches package version
+        run: |
+          @getparafe/a2a-extension_VERSION="v$(node -p "require('./package.json').version")"
+          if [ "$@getparafe/a2a-extension_VERSION" != "${{ github.event.release.tag_name }}" ]; then
+            echo "Release tag ${{ github.event.release.tag_name }} does not match package.json version $@getparafe/a2a-extension_VERSION"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Run integration tests against staging
+        env:
+          PARAFE_TEST_BROKER_URL: ${{ secrets.STAGING_BROKER_URL }}
+        run: npm run test:integration
+
+      # Uses npm trusted publishing: GitHub's OIDC identity (id-token: write
+      # above) replaces a long-lived NPM_TOKEN. Configured on npmjs.com under
+      # @getparafe/a2a-extension > Settings > Trusted Publisher (repo getparafe/parafe-a2a-extension,
+      # workflow publish.yml). --provenance links the package to this build.
+      - name: Publish to npm
+        run: npm publish --access public --provenance
