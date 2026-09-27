@@ -1,0 +1,285 @@
+import {
+  PARAFE_EXTENSION_URI,
+  PARAFE_V1_HANDSHAKE_CHALLENGE,
+  PARAFE_V1_HANDSHAKE_COMPLETE,
+  PARAFE_V1_CONSENT_TOKEN,
+} from './constants.js';
+import { MalformedParafeDataError, isParafeError } from './errors.js';
+import type {
+  A2AMessageLike,
+  ConsentTokenPayload,
+  HandshakeChallengePayload,
+  HandshakeCompletePayload,
+  ParafeErrorPayload,
+  ParafeMessageData,
+} from './types.js';
+
+// ---------------------------------------------------------------------------
+// Writing — Parafe data lives at message.metadata[PARAFE_EXTENSION_URI], and the
+// URI is listed in message.extensions. Never in parts: agents feed parts to
+// language models and store them in logs.
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a copy of `message` carrying Parafe data: sets
+ * `metadata[PARAFE_EXTENSION_URI]` and adds the URI to `extensions`.
+ * Other metadata and extensions are kept. Works with @a2a-js/sdk `Message`
+ * objects and raw A2A 1.0 / 0.3 JSON.
+ *
+ * @example
+ * const message = withParafe(
+ *   { messageId, role: 'ROLE_USER', parts: [{ text: 'Two dozen glazed, please.' }] },
+ *   { consent: { token: consentToken, session_id: sessionId } },
+ * );
+ */
+export function withParafe<M extends A2AMessageLike>(message: M, data: ParafeMessageData): M {
+  const extensions = [...(message.extensions ?? [])];
+  if (!extensions.includes(PARAFE_EXTENSION_URI)) extensions.push(PARAFE_EXTENSION_URI);
+  return {
+    ...message,
+    extensions,
+    metadata: { ...(message.metadata ?? {}), [PARAFE_EXTENSION_URI]: data },
+  };
+}
+
+/** Shorthand for `withParafe(message, { consent: { token, session_id } })`. */
+export function withConsentToken<M extends A2AMessageLike>(
+  message: M,
+  token: string,
+  sessionId: string
+): M {
+  return withParafe(message, { consent: { token, session_id: sessionId } });
+}
+
+/**
+ * Parafe `error` data for a refused request. Pass one of this package's errors
+ * (e.g. from verifyMessageConsentToken) to report it the way the specification
+ * describes. Any other error is reported as INVALID_CONSENT_TOKEN without its message.
+ *
+ * @example
+ * catch (err) {
+ *   reply = withParafe(reply, parafeErrorData(err));
+ * }
+ */
+export function parafeErrorData(err: unknown): { error: ParafeErrorPayload } {
+  if (isParafeError(err)) {
+    return { error: { code: err.code, message: err.message } };
+  }
+  return { error: { code: 'INVALID_CONSENT_TOKEN', message: 'Parafe consent could not be verified.' } };
+}
+
+// ---------------------------------------------------------------------------
+// Reading — accepts v2 metadata, and (until 2027-03-31) v1 data parts in any of
+// their three shapes: A2A 0.3 `{ kind: 'data', data }`, A2A 1.0 wire
+// `{ data }`, and @a2a-js/sdk `{ content: { $case: 'data', value } }`.
+// ---------------------------------------------------------------------------
+
+export interface ReadParafeOptions {
+  /**
+   * Also accept v1-style Parafe data parts. Defaults to true.
+   * v1 support is planned until 2027-03-31.
+   */
+  acceptV1?: boolean;
+}
+
+/**
+ * Reads the Parafe data from an A2A message. Returns null if the message has none.
+ * Throws MalformedParafeDataError if Parafe data is present but invalid.
+ *
+ * Pass the whole message (not `message.parts`).
+ */
+export function readParafe(
+  message: A2AMessageLike,
+  options: ReadParafeOptions = {}
+): ParafeMessageData | null {
+  if (Array.isArray(message)) {
+    throw new TypeError(
+      'readParafe() takes the whole A2A message, not its parts array. Parafe data lives in message.metadata.'
+    );
+  }
+
+  const fromMetadata = message.metadata?.[PARAFE_EXTENSION_URI];
+  if (fromMetadata !== undefined && fromMetadata !== null) {
+    return validateParafeData(fromMetadata);
+  }
+
+  if (options.acceptV1 ?? true) {
+    return readV1DataParts(message.parts ?? []);
+  }
+  return null;
+}
+
+/** The `handshake_challenge` in a message, or null. */
+export function extractHandshakeChallenge(
+  message: A2AMessageLike,
+  options?: ReadParafeOptions
+): HandshakeChallengePayload | null {
+  const data = readParafe(message, options);
+  return data && 'handshake_challenge' in data ? data.handshake_challenge : null;
+}
+
+/** The `handshake_complete` in a message, or null. */
+export function extractHandshakeComplete(
+  message: A2AMessageLike,
+  options?: ReadParafeOptions
+): HandshakeCompletePayload | null {
+  const data = readParafe(message, options);
+  return data && 'handshake_complete' in data ? data.handshake_complete : null;
+}
+
+/** The `consent` (token + session ID) in a message, or null. */
+export function extractConsentToken(
+  message: A2AMessageLike,
+  options?: ReadParafeOptions
+): ConsentTokenPayload | null {
+  const data = readParafe(message, options);
+  return data && 'consent' in data ? data.consent : null;
+}
+
+/** The `error` an agent reported, or null. */
+export function extractParafeError(
+  message: A2AMessageLike,
+  options?: ReadParafeOptions
+): ParafeErrorPayload | null {
+  const data = readParafe(message, options);
+  return data && 'error' in data ? data.error : null;
+}
+
+/** True if the message carries any Parafe data (without validating it). */
+export function hasParafeData(message: A2AMessageLike, options: ReadParafeOptions = {}): boolean {
+  const fromMetadata = message.metadata?.[PARAFE_EXTENSION_URI];
+  if (fromMetadata !== undefined && fromMetadata !== null) return true;
+  if (!(options.acceptV1 ?? true)) return false;
+  return (message.parts ?? []).some((part) => {
+    const data = dataPartValue(part);
+    return data !== null && V1_KEYS.some((key) => key in data);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+const MEMBERS = ['handshake_challenge', 'handshake_complete', 'consent', 'error'] as const;
+
+function validateParafeData(raw: unknown): ParafeMessageData {
+  if (!isObject(raw)) {
+    throw new MalformedParafeDataError('metadata', 'expected an object');
+  }
+  const present = MEMBERS.filter((m) => raw[m] !== undefined);
+  if (present.length !== 1) {
+    throw new MalformedParafeDataError(
+      'metadata',
+      present.length === 0
+        ? `expected one of ${MEMBERS.join(', ')}`
+        : `expected exactly one member, got ${present.join(', ')}`
+    );
+  }
+  const member = present[0]!;
+  const value = raw[member];
+  switch (member) {
+    case 'handshake_challenge':
+      return { handshake_challenge: validateChallenge(value, member) };
+    case 'handshake_complete':
+      return { handshake_complete: validateComplete(value, member) };
+    case 'consent':
+      return { consent: validateConsent(value, member) };
+    case 'error':
+      return { error: validateError(value) };
+  }
+}
+
+function validateChallenge(value: unknown, label: string): HandshakeChallengePayload {
+  const payload = requireObject(value, label);
+  requireStrings(payload, label, ['handshake_id', 'challenge', 'initiator_agent_id', 'broker_url', 'requested_scope']);
+  const perms = payload['requested_permissions'];
+  if (perms !== undefined && !(Array.isArray(perms) && perms.every((p) => typeof p === 'string'))) {
+    throw new MalformedParafeDataError(label, 'requested_permissions must be an array of strings');
+  }
+  // Broker challenge nonces are 32 random bytes, hex-encoded.
+  const challenge = payload['challenge'] as string;
+  if (!/^[0-9a-f]{64}$/i.test(challenge)) {
+    throw new MalformedParafeDataError(
+      label,
+      `challenge nonce must be a 64-character hex string, got "${challenge.length > 128 ? challenge.slice(0, 128) + '...' : challenge}"`
+    );
+  }
+  return payload as unknown as HandshakeChallengePayload;
+}
+
+function validateComplete(value: unknown, label: string): HandshakeCompletePayload {
+  const payload = requireObject(value, label);
+  requireStrings(payload, label, ['handshake_id', 'status']);
+  const status = payload['status'];
+  if (status !== 'authenticated' && status !== 'rejected' && status !== 'error') {
+    throw new MalformedParafeDataError(label, `status must be authenticated, rejected or error, got "${String(status)}"`);
+  }
+  if (status === 'authenticated' && typeof payload['consent_token'] !== 'string') {
+    throw new MalformedParafeDataError(label, 'consent_token is required when status is authenticated');
+  }
+  return payload as unknown as HandshakeCompletePayload;
+}
+
+function validateConsent(value: unknown, label: string): ConsentTokenPayload {
+  const payload = requireObject(value, label);
+  requireStrings(payload, label, ['token', 'session_id']);
+  return payload as unknown as ConsentTokenPayload;
+}
+
+function validateError(value: unknown): ParafeErrorPayload {
+  const payload = requireObject(value, 'error');
+  requireStrings(payload, 'error', ['code', 'message']);
+  return payload as unknown as ParafeErrorPayload;
+}
+
+function requireObject(value: unknown, label: string): Record<string, unknown> {
+  if (!isObject(value)) throw new MalformedParafeDataError(label, 'expected an object');
+  return value;
+}
+
+function requireStrings(payload: Record<string, unknown>, label: string, fields: string[]): void {
+  const missing = fields.filter((f) => typeof payload[f] !== 'string');
+  if (missing.length > 0) {
+    throw new MalformedParafeDataError(label, `missing fields: ${missing.join(', ')}`);
+  }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// ---------------------------------------------------------------------------
+// v1 data parts
+// ---------------------------------------------------------------------------
+
+const V1_KEYS = [PARAFE_V1_HANDSHAKE_CHALLENGE, PARAFE_V1_HANDSHAKE_COMPLETE, PARAFE_V1_CONSENT_TOKEN];
+
+/** The `data` object of a data part in any of its three shapes, or null. */
+function dataPartValue(part: unknown): Record<string, unknown> | null {
+  if (!isObject(part)) return null;
+  // @a2a-js/sdk: { content: { $case: 'data', value } }
+  const content = part['content'];
+  if (isObject(content)) {
+    return content['$case'] === 'data' && isObject(content['value']) ? content['value'] : null;
+  }
+  // A2A 0.3: { kind: 'data', data }. A2A 1.0 wire: { data } (no kind).
+  if (part['kind'] !== undefined && part['kind'] !== 'data') return null;
+  return isObject(part['data']) ? part['data'] : null;
+}
+
+function readV1DataParts(parts: readonly unknown[]): ParafeMessageData | null {
+  for (const part of parts) {
+    const data = dataPartValue(part);
+    if (data === null) continue;
+    if (PARAFE_V1_HANDSHAKE_CHALLENGE in data) {
+      return { handshake_challenge: validateChallenge(data[PARAFE_V1_HANDSHAKE_CHALLENGE], PARAFE_V1_HANDSHAKE_CHALLENGE) };
+    }
+    if (PARAFE_V1_HANDSHAKE_COMPLETE in data) {
+      return { handshake_complete: validateComplete(data[PARAFE_V1_HANDSHAKE_COMPLETE], PARAFE_V1_HANDSHAKE_COMPLETE) };
+    }
+    if (PARAFE_V1_CONSENT_TOKEN in data) {
+      return { consent: validateConsent(data[PARAFE_V1_CONSENT_TOKEN], PARAFE_V1_CONSENT_TOKEN) };
+    }
+  }
+  return null;
+}

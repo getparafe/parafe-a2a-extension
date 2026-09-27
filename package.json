@@ -1,7 +1,7 @@
 {
   "name": "@getparafe/a2a-extension",
-  "version": "1.0.0",
-  "description": "Parafe trust extension for the Google A2A protocol — cryptographic agent identity, scoped consent, and handshake lifecycle via A2A DataParts",
+  "version": "2.0.0",
+  "description": "Parafé trust extension for the A2A protocol (A2A 1.0 and 0.3) — cryptographic agent identity, mutual authentication, and scoped consent carried in A2A message metadata",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -11,24 +11,20 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    },
-    "./compat": {
-      "types": "./dist/compat/index.d.ts",
-      "import": "./dist/compat/index.js",
-      "require": "./dist/compat/index.cjs"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/compat/index.ts --format esm,cjs --dts",
-    "dev": "tsup src/index.ts src/compat/index.ts --format esm,cjs --dts --watch",
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:unit": "vitest run tests/unit",
+    "test:unit": "vitest run tests/unit tests/interop",
     "test:integration": "vitest run tests/integration",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test:interop": "vitest run tests/interop"
   },
   "keywords": [
     "a2a",
@@ -40,7 +36,8 @@
     "agent",
     "ai",
     "google-a2a",
-    "datapart"
+    "a2a-protocol",
+    "a2a-extension"
   ],
   "author": "Parafe <hello@parafe.ai>",
   "license": "MIT",
@@ -53,6 +50,8 @@
     "jose": "^5.9.6"
   },
   "devDependencies": {
+    "@a2a-js/sdk": "^1.2.1",
+    "express": "^5.2.1",
     "tsup": "^8.3.5",
     "typescript": "^5.7.3",
     "vitest": "^4.1.2"

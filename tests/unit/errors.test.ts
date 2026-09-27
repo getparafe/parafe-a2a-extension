@@ -4,7 +4,9 @@ import {
   InvalidConsentTokenError,
   ExpiredConsentTokenError,
   ScopeViolationError,
-  MalformedDataPartError,
+  MalformedParafeDataError,
+  WrongAudienceError,
+  isParafeError,
 } from '../../src/index.js';
 
 describe('error classes', () => {
@@ -61,19 +63,40 @@ describe('error classes', () => {
     expect(err.message).toContain('a, b');
   });
 
-  it('MalformedDataPartError has correct code, name, and dataPartType', () => {
-    const err = new MalformedDataPartError('parafe.handshake.Challenge', 'missing fields: challenge');
-    expect(err.code).toBe('MALFORMED_DATA_PART');
-    expect(err.name).toBe('MalformedDataPartError');
-    expect(err.dataPartType).toBe('parafe.handshake.Challenge');
+  it('ScopeViolationError uses a custom message when given', () => {
+    const err = new ScopeViolationError('order', ['read'], 'Scope "order" requires "attested".');
+    expect(err.message).toBe('Scope "order" requires "attested".');
+    expect(err.code).toBe('SCOPE_VIOLATION');
+  });
+
+  it('MalformedParafeDataError has correct code, name, and member', () => {
+    const err = new MalformedParafeDataError('handshake_challenge', 'missing fields: challenge');
+    expect(err.code).toBe('MALFORMED_PARAFE_DATA');
+    expect(err.name).toBe('MalformedParafeDataError');
+    expect(err.member).toBe('handshake_challenge');
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toContain('missing fields');
   });
 
-  it('MalformedDataPartError works without detail', () => {
-    const err = new MalformedDataPartError('parafe.trust.ConsentToken');
-    expect(err.code).toBe('MALFORMED_DATA_PART');
-    expect(err.message).toContain('parafe.trust.ConsentToken');
+  it('MalformedParafeDataError works without detail', () => {
+    const err = new MalformedParafeDataError('consent');
+    expect(err.message).toContain('consent');
+  });
+
+  it('WrongAudienceError names both agents', () => {
+    const err = new WrongAudienceError('prf_agent_me', 'prf_agent_other');
+    expect(err.code).toBe('WRONG_AUDIENCE');
+    expect(err.name).toBe('WrongAudienceError');
+    expect(err.expectedAgentId).toBe('prf_agent_me');
+    expect(err.tokenAgentId).toBe('prf_agent_other');
+    expect(err.message).toContain('prf_agent_other');
+  });
+
+  it('isParafeError recognizes only this package\'s errors', () => {
+    expect(isParafeError(new WrongAudienceError('a', null))).toBe(true);
+    expect(isParafeError(new InvalidConsentTokenError())).toBe(true);
+    expect(isParafeError(new Error('other'))).toBe(false);
+    expect(isParafeError('nope')).toBe(false);
   });
 
   it('all errors are catchable as Error', () => {
@@ -82,7 +105,8 @@ describe('error classes', () => {
       new InvalidConsentTokenError(),
       new ExpiredConsentTokenError(new Date()),
       new ScopeViolationError('x', []),
-      new MalformedDataPartError('parafe.test'),
+      new MalformedParafeDataError('consent'),
+      new WrongAudienceError('a', 'b'),
     ];
 
     for (const err of errors) {

@@ -1,27 +1,25 @@
 // Constants
 export {
   PARAFE_EXTENSION_URI,
-  PARAFE_HANDSHAKE_CHALLENGE,
-  PARAFE_HANDSHAKE_COMPLETE,
-  PARAFE_TRUST_CONSENT_TOKEN,
+  PARAFE_EXTENSION_URI_V1,
+  A2A_EXTENSIONS_HEADER,
+  A2A_EXTENSIONS_HEADER_V0_3,
+  A2A_VERSION_HEADER,
+  PARAFE_V1_HANDSHAKE_CHALLENGE,
+  PARAFE_V1_HANDSHAKE_COMPLETE,
+  PARAFE_V1_CONSENT_TOKEN,
   DEFAULT_BROKER_URL,
 } from './constants.js';
 
-// Types — A2A base
+// Types — A2A message shape and Parafe message data
 export type {
-  A2ADataPart,
-  A2ATextPart,
-  A2AMessagePart,
-} from './types.js';
-
-// Types — DataPart payloads
-export type {
+  A2AMessageLike,
   HandshakeChallengePayload,
   HandshakeCompletePayload,
   ConsentTokenPayload,
-  HandshakeChallengeDataPart,
-  HandshakeCompleteDataPart,
-  ConsentTokenDataPart,
+  ParafeErrorCode,
+  ParafeErrorPayload,
+  ParafeMessageData,
 } from './types.js';
 
 // Types — AgentCard
@@ -35,6 +33,8 @@ export type {
 // Types — Verification
 export type {
   ParafeConsentClaims,
+  VerifyConsentOptions,
+  VerifyMessageOptions,
   VerifyOnlineOptions,
 } from './types.js';
 
@@ -44,19 +44,27 @@ export {
   InvalidConsentTokenError,
   ExpiredConsentTokenError,
   ScopeViolationError,
-  MalformedDataPartError,
+  MalformedParafeDataError,
+  WrongAudienceError,
+  isParafeError,
 } from './errors.js';
 
-// DataPart builders and parsers
+// Message data: write and read
 export {
-  buildHandshakeChallenge,
-  buildHandshakeComplete,
-  buildConsentTokenPart,
+  withParafe,
+  withConsentToken,
+  parafeErrorData,
+  readParafe,
   extractHandshakeChallenge,
   extractHandshakeComplete,
   extractConsentToken,
-  hasParafeDataPart,
-} from './data-parts.js';
+  extractParafeError,
+  hasParafeData,
+} from './message.js';
+export type { ReadParafeOptions } from './message.js';
+
+// Activation headers
+export { activationHeaders, isParafeActivated } from './headers.js';
 
 // AgentCard builder and parser
 export {

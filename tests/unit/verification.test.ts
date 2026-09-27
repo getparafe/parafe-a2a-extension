@@ -3,8 +3,9 @@ import { SignJWT, exportSPKI, generateKeyPair } from 'jose';
 import {
   verifyConsentTokenOffline,
   verifyMessageConsentToken,
-  buildConsentTokenPart,
+  withConsentToken,
   InvalidConsentTokenError,
+  WrongAudienceError,
   ExpiredConsentTokenError,
   ScopeViolationError,
   MissingParafeExtensionError,
@@ -123,42 +124,142 @@ describe('verifyConsentTokenOffline', () => {
   });
 });
 
-describe('verifyMessageConsentToken', () => {
-  it('extracts and verifies a consent token from message parts', async () => {
-    const { token, pemPublicKey } = await createTestToken();
-    const parts = [
-      buildConsentTokenPart(token, 'sess_test123'),
-      { kind: 'text' as const, text: 'Show me flights' },
-    ];
+describe('verifyConsentTokenOffline checks', () => {
+  const scopeRequirements = {
+    'test-scope': { permissions: ['read_data', 'write_data', 'delete_data'], minimum_authorization_modality: 'autonomous' as const },
+  };
 
-    const { claims, sessionId } = await verifyMessageConsentToken(parts, pemPublicKey);
+  it('accepts a token issued for this agent', async () => {
+    const { token, pemPublicKey } = await createTestToken();
+    const claims = await verifyConsentTokenOffline(token, pemPublicKey, { agentId: 'prf_agent_target' });
+    expect(claims.target_agent_id).toBe('prf_agent_target');
+  });
+
+  it('rejects a token issued for a different agent', async () => {
+    const { token, pemPublicKey } = await createTestToken();
+    await expect(
+      verifyConsentTokenOffline(token, pemPublicKey, { agentId: 'prf_agent_someone_else' })
+    ).rejects.toThrow(WrongAudienceError);
+  });
+
+  it('rejects a token with no target when an agent is expected', async () => {
+    const { token, pemPublicKey } = await createTestToken({ target_agent_id: null });
+    await expect(
+      verifyConsentTokenOffline(token, pemPublicKey, { agentId: 'prf_agent_target' })
+    ).rejects.toThrow(WrongAudienceError);
+  });
+
+  it('rejects a session mismatch', async () => {
+    const { token, pemPublicKey } = await createTestToken();
+    await expect(
+      verifyConsentTokenOffline(token, pemPublicKey, { sessionId: 'sess_other' })
+    ).rejects.toThrow(/session/);
+  });
+
+  it('accepts a token within the declared scope requirements', async () => {
+    const { token, pemPublicKey } = await createTestToken();
+    await expect(
+      verifyConsentTokenOffline(token, pemPublicKey, { scopeRequirements, action: 'write_data' })
+    ).resolves.toBeTruthy();
+  });
+
+  it('rejects a scope the agent does not declare', async () => {
+    const { token, pemPublicKey } = await createTestToken({ scope: 'admin' });
+    await expect(
+      verifyConsentTokenOffline(token, pemPublicKey, { scopeRequirements })
+    ).rejects.toThrow(/does not declare/);
+  });
+
+  it('rejects permissions outside the declared scope', async () => {
+    const { token, pemPublicKey } = await createTestToken({ permissions: ['read_data', 'transfer_funds'] });
+    await expect(
+      verifyConsentTokenOffline(token, pemPublicKey, { scopeRequirements })
+    ).rejects.toThrow(/transfer_funds/);
+  });
+
+  it('rejects a modality below the scope minimum', async () => {
+    const { token, pemPublicKey } = await createTestToken({ authorization_modality: 'autonomous' });
+    await expect(
+      verifyConsentTokenOffline(token, pemPublicKey, {
+        scopeRequirements: { 'test-scope': { ...scopeRequirements['test-scope'], minimum_authorization_modality: 'attested' } },
+      })
+    ).rejects.toThrow(ScopeViolationError);
+  });
+
+  it('accepts a modality above the scope minimum', async () => {
+    const { token, pemPublicKey } = await createTestToken({ authorization_modality: 'verified' });
+    await expect(
+      verifyConsentTokenOffline(token, pemPublicKey, {
+        scopeRequirements: { 'test-scope': { ...scopeRequirements['test-scope'], minimum_authorization_modality: 'attested' } },
+      })
+    ).resolves.toBeTruthy();
+  });
+
+  it('does not treat inherited object keys as declared scopes', async () => {
+    const { token, pemPublicKey } = await createTestToken({ scope: 'toString' });
+    await expect(
+      verifyConsentTokenOffline(token, pemPublicKey, { scopeRequirements })
+    ).rejects.toThrow(/does not declare/);
+  });
+});
+
+describe('verifyMessageConsentToken', () => {
+  const message = (token: string, sessionId = 'sess_test123') =>
+    withConsentToken({ messageId: 'm1', role: 'ROLE_USER', parts: [{ text: 'Show me flights' }] }, token, sessionId);
+
+  it('extracts and verifies a consent token from message metadata', async () => {
+    const { token, pemPublicKey } = await createTestToken();
+    const { claims, sessionId } = await verifyMessageConsentToken(message(token), pemPublicKey, { agentId: 'prf_agent_target' });
     expect(claims.scope).toBe('test-scope');
     expect(sessionId).toBe('sess_test123');
   });
 
-  it('throws MissingParafeExtensionError when no consent token DataPart', async () => {
-    const { pemPublicKey } = await createTestToken();
-    const parts = [{ kind: 'text' as const, text: 'no token here' }];
+  it('accepts a v1 consent data part', async () => {
+    const { token, pemPublicKey } = await createTestToken();
+    const v1 = { parts: [{ kind: 'data', data: { 'parafe.trust.ConsentToken': { token, session_id: 'sess_test123' } } }] };
+    const { sessionId } = await verifyMessageConsentToken(v1, pemPublicKey, { agentId: 'prf_agent_target' });
+    expect(sessionId).toBe('sess_test123');
+  });
 
+  it('ignores a v1 consent data part when acceptV1 is false', async () => {
+    const { token, pemPublicKey } = await createTestToken();
+    const v1 = { parts: [{ kind: 'data', data: { 'parafe.trust.ConsentToken': { token, session_id: 'sess_test123' } } }] };
     await expect(
-      verifyMessageConsentToken(parts, pemPublicKey)
+      verifyMessageConsentToken(v1, pemPublicKey, { agentId: 'prf_agent_target', acceptV1: false })
     ).rejects.toThrow(MissingParafeExtensionError);
   });
 
-  it('verifies required action when provided', async () => {
-    const { token, pemPublicKey } = await createTestToken();
-    const parts = [buildConsentTokenPart(token, 'sess_test123')];
+  it('throws MissingParafeExtensionError when the message has no consent token', async () => {
+    const { pemPublicKey } = await createTestToken();
+    await expect(
+      verifyMessageConsentToken({ parts: [{ text: 'no token here' }] }, pemPublicKey, { agentId: 'prf_agent_target' })
+    ).rejects.toThrow(MissingParafeExtensionError);
+  });
 
-    const { claims } = await verifyMessageConsentToken(parts, pemPublicKey, 'read_data');
+  it('rejects a token issued for another agent', async () => {
+    const { token, pemPublicKey } = await createTestToken();
+    await expect(
+      verifyMessageConsentToken(message(token), pemPublicKey, { agentId: 'prf_agent_me' })
+    ).rejects.toThrow(WrongAudienceError);
+  });
+
+  it('rejects when the message names a different session than the token', async () => {
+    const { token, pemPublicKey } = await createTestToken();
+    await expect(
+      verifyMessageConsentToken(message(token, 'sess_other'), pemPublicKey, { agentId: 'prf_agent_target' })
+    ).rejects.toThrow(InvalidConsentTokenError);
+  });
+
+  it('verifies the action when provided', async () => {
+    const { token, pemPublicKey } = await createTestToken();
+    const { claims } = await verifyMessageConsentToken(message(token), pemPublicKey, { agentId: 'prf_agent_target', action: 'read_data' });
     expect(claims.permissions).toContain('read_data');
   });
 
-  it('throws ScopeViolationError for unpermitted action', async () => {
+  it('throws ScopeViolationError for an excluded action', async () => {
     const { token, pemPublicKey } = await createTestToken();
-    const parts = [buildConsentTokenPart(token, 'sess_test123')];
-
     await expect(
-      verifyMessageConsentToken(parts, pemPublicKey, 'delete_data')
+      verifyMessageConsentToken(message(token), pemPublicKey, { agentId: 'prf_agent_target', action: 'delete_data' })
     ).rejects.toThrow(ScopeViolationError);
   });
 });

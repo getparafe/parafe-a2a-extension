@@ -1,4 +1,4 @@
-import { PARAFE_EXTENSION_URI, DEFAULT_BROKER_URL } from './constants.js';
+import { PARAFE_EXTENSION_URI, PARAFE_EXTENSION_URI_V1, DEFAULT_BROKER_URL } from './constants.js';
 import type {
   ParafeAgentCardExtension,
   ParafeExtensionParams,
@@ -11,9 +11,14 @@ import type {
  * The result declares what scopes this agent supports and what policy requirements
  * must be met, so discovering agents know what to expect before initiating a handshake.
  *
+ * `required` is an explicit choice: `true` turns away every caller that doesn't use
+ * Parafe (A2A 1.0 SDKs enforce this before your code runs); `false` also serves
+ * callers without Parafe, and you check consent per scoped action.
+ *
  * @example
  * const ext = buildAgentCardExtension({
  *   agentId: 'prf_agent_donuts01',
+ *   required: false,
  *   scopeRequirements: {
  *     'check-menu': {
  *       permissions: ['read_menu', 'read_availability'],
@@ -36,7 +41,7 @@ export function buildAgentCardExtension(
 ): ParafeAgentCardExtension {
   return {
     uri: PARAFE_EXTENSION_URI,
-    required: options.required ?? true,
+    required: options.required,
     ...(options.description !== undefined ? { description: options.description } : {}),
     params: {
       agent_id: options.agentId,
@@ -49,13 +54,15 @@ export function buildAgentCardExtension(
 
 /**
  * Finds and parses a Parafe extension entry from an AgentCard's capabilities.extensions array.
- * Returns null if no Parafe extension is found.
+ * Recognizes the v2 URI and the v1 URI (preferring v2 if a card lists both).
+ * The returned `uri` tells you which one the agent declared.
+ * Returns null if no valid Parafe extension is found.
  *
  * Use this when your agent fetches another agent's AgentCard and wants to determine
  * whether Parafe trust is required and what scopes are available.
  *
  * @example
- * const agentCard = await fetchAgentCard('https://agentdonuts.com/.well-known/agent.json');
+ * const agentCard = await fetchAgentCard('https://agentdonuts.com/.well-known/agent-card.json');
  * const parafe = parseAgentCardExtension(agentCard.capabilities.extensions);
  * if (parafe) {
  *   console.log('Parafe required:', parafe.required);
@@ -64,9 +71,12 @@ export function buildAgentCardExtension(
  * }
  */
 export function parseAgentCardExtension(
-  extensions: Array<{ uri: string; [key: string]: unknown }>
+  extensions: ReadonlyArray<{ uri: string; [key: string]: unknown }> | null | undefined
 ): ParafeAgentCardExtension | null {
-  const entry = extensions.find((ext) => ext.uri === PARAFE_EXTENSION_URI);
+  const list = extensions ?? [];
+  const entry =
+    list.find((ext) => ext?.uri === PARAFE_EXTENSION_URI) ??
+    list.find((ext) => ext?.uri === PARAFE_EXTENSION_URI_V1);
   if (!entry) return null;
 
   const params = entry['params'] as Record<string, unknown> | undefined;
@@ -92,7 +102,7 @@ export function parseAgentCardExtension(
   }
 
   return {
-    uri: PARAFE_EXTENSION_URI,
+    uri: entry.uri,
     required: entry['required'] === true,
     ...(typeof entry['description'] === 'string' ? { description: entry['description'] } : {}),
     params: {

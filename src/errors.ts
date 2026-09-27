@@ -53,11 +53,12 @@ export class ScopeViolationError extends Error {
   readonly requiredScope: string | string[];
   readonly grantedScopes: string[];
 
-  constructor(requiredScope: string | string[], grantedScopes: string[]) {
+  constructor(requiredScope: string | string[], grantedScopes: string[], detail?: string) {
     const required = Array.isArray(requiredScope) ? requiredScope.join(', ') : requiredScope;
     super(
-      `Consent token does not include required scope "${required}". ` +
-        `Granted scopes: ${grantedScopes.join(', ')}.`
+      detail ??
+        `Consent token does not include required scope "${required}". ` +
+          `Granted scopes: ${grantedScopes.join(', ')}.`
     );
     this.name = 'ScopeViolationError';
     this.requiredScope = requiredScope;
@@ -66,18 +67,57 @@ export class ScopeViolationError extends Error {
 }
 
 /**
- * Thrown when a DataPart key is present but the payload structure is invalid.
+ * Thrown when Parafe data is present in a message but a required field is missing or invalid.
  */
-export class MalformedDataPartError extends Error {
-  readonly code = 'MALFORMED_DATA_PART';
-  readonly dataPartType: string;
+export class MalformedParafeDataError extends Error {
+  readonly code = 'MALFORMED_PARAFE_DATA';
+  readonly member: string;
 
-  constructor(dataPartType: string, detail?: string) {
+  constructor(member: string, detail?: string) {
     super(
-      `Malformed Parafe DataPart "${dataPartType}"${detail ? `: ${detail}` : '.'}` +
-        ' The DataPart key is present but the payload is missing required fields.'
+      `Malformed Parafe data "${member}"${detail ? `: ${detail}` : '.'}` +
+        ' The Parafe data is present but a required field is missing or invalid.'
     );
-    this.name = 'MalformedDataPartError';
-    this.dataPartType = dataPartType;
+    this.name = 'MalformedParafeDataError';
+    this.member = member;
   }
+}
+
+/**
+ * Thrown when a consent token was issued for a different agent than the one verifying it.
+ */
+export class WrongAudienceError extends Error {
+  readonly code = 'WRONG_AUDIENCE';
+  readonly expectedAgentId: string;
+  readonly tokenAgentId: string | null;
+
+  constructor(expectedAgentId: string, tokenAgentId: string | null) {
+    super(
+      `Parafe consent token was issued for agent "${tokenAgentId ?? '(none)'}", not "${expectedAgentId}".` +
+        ' An agent must only accept tokens issued for itself.'
+    );
+    this.name = 'WrongAudienceError';
+    this.expectedAgentId = expectedAgentId;
+    this.tokenAgentId = tokenAgentId;
+  }
+}
+
+type ParafeError =
+  | MissingParafeExtensionError
+  | InvalidConsentTokenError
+  | ExpiredConsentTokenError
+  | ScopeViolationError
+  | MalformedParafeDataError
+  | WrongAudienceError;
+
+/** True for any error class this package throws. */
+export function isParafeError(err: unknown): err is ParafeError {
+  return (
+    err instanceof MissingParafeExtensionError ||
+    err instanceof InvalidConsentTokenError ||
+    err instanceof ExpiredConsentTokenError ||
+    err instanceof ScopeViolationError ||
+    err instanceof MalformedParafeDataError ||
+    err instanceof WrongAudienceError
+  );
 }
