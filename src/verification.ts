@@ -1,9 +1,7 @@
 import {
-  importSPKI,
   importJWK,
   jwtVerify,
   decodeJwt,
-  decodeProtectedHeader,
   createLocalJWKSet,
   calculateJwkThumbprint,
   SignJWT,
@@ -11,7 +9,7 @@ import {
   type KeyLike,
 } from 'jose';
 import { DEFAULT_BROKER_URL } from './constants.js';
-import { extractConsentToken, type ReadParafeOptions } from './message.js';
+import { extractConsentToken } from './message.js';
 import type { ActionReceiptInput, RecordedActionReceipt } from './action-receipts.js';
 import {
   MissingParafeExtensionError,
@@ -38,12 +36,11 @@ import type {
  *
  * This is the recommended verification path for most A2A agents. Fetch the
  * broker's keys once at startup (or cache them) via fetchBrokerKeys(), then call
- * this function on every incoming request. Since 2026-09-30 the broker signs
- * ES256 and names its key (`kid`); a PEM Ed25519 key from fetchBrokerPublicKey()
- * still verifies tokens issued before that.
+ * this function on every incoming request. The broker signs ES256 and names its
+ * key (`kid`).
  *
  * Validates:
- * - The broker's signature is valid (ES256 by kid, or EdDSA)
+ * - The broker's signature is valid (ES256, by kid)
  * - Token has not expired
  * - Issuer is "parafe-trust-broker"
  * - Token type is "consent"
@@ -51,12 +48,12 @@ import type {
  *   and fits `scopeRequirements` (see VerifyConsentOptions)
  *
  * @param token - The consent token JWT string
- * @param brokerPublicKey - The broker's Ed25519 public key in PEM format (from fetchBrokerPublicKey)
+ * @param brokerKeys - The broker's JWKS (fetchBrokerKeys()) or a key cache (createBrokerKeyCache())
  * @param options - Extra checks, or just the action that must be permitted
  */
 export async function verifyConsentTokenOffline(
   token: string,
-  brokerKeys: BrokerKeys | BrokerKeyCache | string,
+  brokerKeys: BrokerKeys | BrokerKeyCache,
   options: VerifyConsentOptions | string = {}
 ): Promise<ParafeConsentClaims> {
   const checks: VerifyConsentOptions = typeof options === 'string' ? { action: options } : options;
@@ -68,7 +65,7 @@ export async function verifyConsentTokenOffline(
       // Keys that refresh themselves: a token naming a key the cache doesn't
       // have yet (the broker added one) triggers one refetch, then a retry.
       const verifyWith = async (keys: BrokerKeys) =>
-        jwtVerify(token, createLocalJWKSet(keys as unknown as { keys: JWK[] }), { algorithms: ['ES256', 'EdDSA'], issuer: 'parafe-trust-broker' });
+        jwtVerify(token, createLocalJWKSet(keys as unknown as { keys: JWK[] }), { algorithms: ['ES256'], issuer: 'parafe-trust-broker' });
       try {
         ({ payload } = await verifyWith(await brokerKeys.get()));
       } catch (err) {
@@ -76,16 +73,12 @@ export async function verifyConsentTokenOffline(
         if (!refreshed) throw err;
         ({ payload } = await verifyWith(refreshed));
       }
-    } else if (typeof brokerKeys === 'string') {
-      // Legacy: the broker's Ed25519 key as PEM. Tokens since 2026-09-30 are ES256.
-      if (safeHeaderAlg(token) === 'ES256') {
-        throw new Error('this token is ES256 (broker 2026-09-30+); pass fetchBrokerKeys() instead of a PEM public key');
-      }
-      const publicKey = await importSPKI(brokerKeys, 'EdDSA');
-      ({ payload } = await jwtVerify(token, publicKey, { algorithms: ['EdDSA'], issuer: 'parafe-trust-broker' }));
     } else {
+      if (typeof brokerKeys !== 'object' || brokerKeys === null || !Array.isArray((brokerKeys as BrokerKeys).keys)) {
+        throw new TypeError('brokerKeys must be the broker JWKS (fetchBrokerKeys()) or createBrokerKeyCache()');
+      }
       const keySet = createLocalJWKSet(brokerKeys as unknown as { keys: JWK[] });
-      ({ payload } = await jwtVerify(token, keySet, { algorithms: ['ES256', 'EdDSA'], issuer: 'parafe-trust-broker' }));
+      ({ payload } = await jwtVerify(token, keySet, { algorithms: ['ES256'], issuer: 'parafe-trust-broker' }));
     }
     claims = payload as unknown as ParafeConsentClaims;
   } catch (err) {
@@ -121,15 +114,11 @@ export async function verifyConsentTokenOffline(
     );
   }
 
-  // Consent token v2 names the claim `exclusions`; older tokens `excluded`. Set both.
-  const exclusions: unknown = claims.exclusions ?? claims.excluded ?? [];
-  if (!Array.isArray(exclusions)) {
+  if (!Array.isArray(claims.exclusions)) {
     throw new InvalidConsentTokenError(
-      `Expected "exclusions" claim to be an array, got ${typeof exclusions}`
+      `Expected "exclusions" claim to be an array, got ${typeof claims.exclusions}`
     );
   }
-  claims.exclusions = exclusions as string[];
-  claims.excluded = (claims.excluded ?? exclusions) as string[];
 
   if (checks.agentId !== undefined && claims.target_agent_id !== checks.agentId) {
     throw new WrongAudienceError(checks.agentId, claims.target_agent_id ?? null);
@@ -147,14 +136,6 @@ export async function verifyConsentTokenOffline(
   }
 
   return claims;
-}
-
-function safeHeaderAlg(token: string): string | undefined {
-  try {
-    return decodeProtectedHeader(token).alg;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -320,8 +301,7 @@ export function createBrokerKeyCache(
 /**
  * Fetches the broker's signing keys (its JWKS, at /.well-known/jwks.json), once.
  * For a long-running agent prefer createBrokerKeyCache(), which also picks up
- * keys the broker adds later. On a broker from before 2026-09-30 (no JWKS) it
- * returns that broker's single Ed25519 key.
+ * keys the broker adds later.
  */
 export async function fetchBrokerKeys(brokerUrl: string = DEFAULT_BROKER_URL): Promise<BrokerKeys> {
   let response: Response;
@@ -329,13 +309,6 @@ export async function fetchBrokerKeys(brokerUrl: string = DEFAULT_BROKER_URL): P
     response = await fetch(`${brokerUrl}/.well-known/jwks.json`);
   } catch (err) {
     throw new Error(`Could not fetch Parafe broker keys from ${brokerUrl}: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  if (response.status === 404) {
-    const pem = await fetchBrokerPublicKey(brokerUrl);
-    const spki = pem.replace(/-----[A-Z ]+-----/g, '').replace(/\s/g, '');
-    const raw = Uint8Array.from(atob(spki), (c) => c.charCodeAt(0)).slice(-32);
-    const x = btoa(String.fromCharCode(...raw)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    return { keys: [{ kty: 'OKP', crv: 'Ed25519', x, kid: 'legacy-ed25519', alg: 'EdDSA' }] };
   }
   if (!response.ok) {
     throw new Error(`Parafe broker returned ${response.status} when fetching its keys from ${brokerUrl}`);
@@ -348,43 +321,6 @@ export async function fetchBrokerKeys(brokerUrl: string = DEFAULT_BROKER_URL): P
 }
 
 /**
- * Fetches the Parafe broker's legacy Ed25519 public key (PEM). It verifies tokens
- * issued before 2026-09-30. For current tokens use fetchBrokerKeys().
- *
- * The broker returns the key as base64-encoded SPKI DER. This function converts it
- * to PEM format, which is what jose's importSPKI() expects.
- */
-export async function fetchBrokerPublicKey(
-  brokerUrl: string = DEFAULT_BROKER_URL
-): Promise<string> {
-  let response: Response;
-  try {
-    response = await fetch(`${brokerUrl}/public-key`);
-  } catch (err) {
-    throw new Error(
-      `Could not fetch Parafe broker public key from ${brokerUrl}: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      `Parafe broker returned ${response.status} when fetching public key from ${brokerUrl}`
-    );
-  }
-
-  const body = await response.json() as Record<string, unknown>;
-  const publicKeyBase64 = body['public_key'];
-
-  if (typeof publicKeyBase64 !== 'string') {
-    throw new Error(
-      'Unexpected response shape from Parafe broker /public-key endpoint — expected "public_key" field'
-    );
-  }
-
-  return derBase64ToPem(publicKeyBase64);
-}
-
-/**
  * Extracts and verifies the consent token from an A2A message in one step:
  * reads the Parafe data (see readParafe), verifies the token offline, and checks that
  * it was issued for `agentId`, belongs to the session the message names, and permits
@@ -393,7 +329,7 @@ export async function fetchBrokerPublicKey(
  * Throws MissingParafeExtensionError if the message carries no consent token.
  *
  * @example
- * const { claims, sessionId } = await verifyMessageConsentToken(ctx.userMessage, brokerPublicKey, {
+ * const { claims, sessionId } = await verifyMessageConsentToken(ctx.userMessage, brokerKeys, {
  *   agentId: MY_AGENT_ID,
  *   action: 'create_order',
  *   scopeRequirements: MY_SCOPES,
@@ -401,8 +337,8 @@ export async function fetchBrokerPublicKey(
  */
 export async function verifyMessageConsentToken(
   message: A2AMessageLike & { messageId?: unknown },
-  brokerKeys: BrokerKeys | BrokerKeyCache | string,
-  options: VerifyMessageOptions & ReadParafeOptions
+  brokerKeys: BrokerKeys | BrokerKeyCache,
+  options: VerifyMessageOptions
 ): Promise<{
   claims: ParafeConsentClaims;
   sessionId: string;
@@ -415,8 +351,8 @@ export async function verifyMessageConsentToken(
    */
   completeAction: (outcome?: Partial<Omit<ActionReceiptInput, 'sessionId' | 'consentToken'>>) => Promise<RecordedActionReceipt>;
 }> {
-  const { acceptV1, requireProof, initiatorKey, brokerUrl, receipts, ...checks } = options;
-  const consent = extractConsentToken(message, acceptV1 === undefined ? {} : { acceptV1 });
+  const { requireProof = true, initiatorKey, brokerUrl, receipts, ...checks } = options;
+  const consent = extractConsentToken(message);
   if (consent === null) {
     throw new MissingParafeExtensionError('No Parafe consent token found in the message.');
   }
@@ -429,7 +365,7 @@ export async function verifyMessageConsentToken(
       sessionId: consent.session_id,
     });
 
-    // Key binding (2.1): the token must be presented by the key it names.
+    // Key binding: the token must be presented by the key it names (required unless requireProof: false).
     if (consent.proof !== undefined) {
       await verifyPresentationProof(consent.proof, consent.token, claims, {
         ...(initiatorKey ? { initiatorKey } : {}),
@@ -513,7 +449,7 @@ export async function verifyPresentationProof(
   options: { initiatorKey?: JsonWebKeyLike; brokerUrl?: string; messageId?: string } = {}
 ): Promise<void> {
   const jkt = claims.cnf?.jkt;
-  if (!jkt) throw new InvalidProofError('the consent token is not key-bound (issued before 2026-09-30)');
+  if (!jkt) throw new InvalidProofError('the consent token is not key-bound (no cnf.jkt)');
   const initiator = claims.sub ?? claims.initiator_agent_id;
   if (!initiator) throw new InvalidProofError('the consent token names no initiator');
   const jwk = options.initiatorKey ?? (await initiatorJwk(initiator, options.brokerUrl ?? DEFAULT_BROKER_URL));
@@ -559,7 +495,7 @@ export async function createPresentationProof(
 ): Promise<string> {
   const aud = decodeJwt(token).aud;
   if (typeof aud !== 'string') {
-    throw new InvalidConsentTokenError('this token has no audience (issued before 2026-09-30); no proof applies');
+    throw new InvalidConsentTokenError('this token has no audience (aud); no proof applies');
   }
   const k = privateKey as unknown as { asymmetricKeyType?: string; algorithm?: { name?: string } };
   const alg = k.asymmetricKeyType === 'ec' || k.algorithm?.name === 'ECDSA' ? 'ES256' : 'EdDSA';
@@ -570,23 +506,12 @@ export async function createPresentationProof(
     .sign(privateKey);
 }
 
-function derBase64ToPem(base64: string): string {
-  if (!/^[A-Za-z0-9+/]+=*$/.test(base64)) {
-    throw new Error('Invalid base64 encoding in public key');
-  }
-  const lines: string[] = [];
-  for (let i = 0; i < base64.length; i += 64) {
-    lines.push(base64.slice(i, i + 64));
-  }
-  return `-----BEGIN PUBLIC KEY-----\n${lines.join('\n')}\n-----END PUBLIC KEY-----`;
-}
-
 function assertPermission(
   action: string,
   permissions: string[],
-  excluded: string[]
+  exclusions: string[]
 ): void {
-  if (excluded.includes(action)) {
+  if (exclusions.includes(action)) {
     throw new ScopeViolationError(action, permissions);
   }
   if (!permissions.includes(action)) {

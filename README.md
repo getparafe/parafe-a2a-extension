@@ -115,7 +115,6 @@ class ShopExecutor implements AgentExecutor {
           agentId: 'prf_agent_donuts01', // reject tokens issued for any other agent
           action: 'create_order',
           scopeRequirements: SCOPES, // defence in depth: scope, permissions and modality match your card
-          requireProof: true, // the token must be presented by the key it's bound to
           receipts, // a refusal is receipted automatically (the error carries it)
         });
         // … place the order; claims.authorization_modality says what human backing it has
@@ -230,21 +229,21 @@ capabilities: { extensions: [buildAgentCardExtension({ agentId, scopeRequirement
 
 ## Verification
 
-`verifyMessageConsentToken(message, brokerKeys, { agentId, action?, scopeRequirements?, requireProof? })` does all of this. `verifyConsentTokenOffline(token, keys, options)` does it for a bare token (without the proof).
+`verifyMessageConsentToken(message, brokerKeys, { agentId, action?, scopeRequirements?, requireProof? })` does all of this (`requireProof` defaults to true). `verifyConsentTokenOffline(token, keys, options)` does it for a bare token (without the proof).
 
 | Check | Error |
 |---|---|
-| Broker signature (ES256 by `kid` from the JWKS; EdDSA for tokens before 2026-09-30), issuer `parafe-trust-broker`, `token_type: consent` | `InvalidConsentTokenError` |
+| Broker signature (ES256 by `kid` from the JWKS), issuer `parafe-trust-broker`, `token_type: consent`, `exclusions` present | `InvalidConsentTokenError` |
 | Not expired | `ExpiredConsentTokenError` |
 | `target_agent_id` is you (`agentId`) | `WrongAudienceError` |
 | The message's `session_id` matches the token's | `InvalidConsentTokenError` |
 | `action` is permitted and not excluded | `ScopeViolationError` |
 | Scope declared, permissions within it, modality ≥ minimum, `initiator_proof` meets `minimum_initiator_proof` (`scopeRequirements`) | `ScopeViolationError` |
-| Presentation proof (when sent, or required by `requireProof`): signed by the key in the token's `cnf.jkt`, for this token, its audience and this message, fresh, not replayed | `InvalidProofError` |
+| Presentation proof (required unless `requireProof: false`; always checked when sent): signed by the key in the token's `cnf.jkt`, for this token, its audience and this message, fresh, not replayed | `InvalidProofError` |
 | No consent token in the message | `MissingParafeExtensionError` |
 | Parafé data present but malformed | `MalformedParafeDataError` |
 
-Hold the broker keys with `createBrokerKeyCache()`: it fetches them on first use and, if a token names a key it doesn't have yet (the broker rotated or added one), refetches once and retries, at most once a minute. There's no network call per message, except the first time an initiator's key is needed to check a proof: it's fetched from the initiator's DID document at the broker and cached (pass `initiatorKey` to avoid even that). Tokens name their initiator (`sub`), their target (`aud`, a DID) and the key they're bound to (`cnf.jkt`); `claims.exclusions` and `claims.initiator_proof` (`pop` or `credential`) say what's forbidden and how the initiator proved itself. `requireProof` is off by default in 2.x and will be on in 3.0. For real-time confirmation on high-value actions, `verifyConsentTokenOnline(token, { action, agentId })` asks the broker.
+Hold the broker keys with `createBrokerKeyCache()`: it fetches them on first use and, if a token names a key it doesn't have yet (the broker rotated or added one), refetches once and retries, at most once a minute. There's no network call per message, except the first time an initiator's key is needed to check a proof: it's fetched from the initiator's DID document at the broker and cached (pass `initiatorKey` to avoid even that). Tokens name their initiator (`sub`), their target (`aud`, a DID) and the key they're bound to (`cnf.jkt`); `claims.exclusions` and `claims.initiator_proof` (`pop` or `credential`) say what's forbidden and how the initiator proved itself. A token sent without a presentation proof is refused unless you pass `requireProof: false`. For real-time confirmation on high-value actions, `verifyConsentTokenOnline(token, { action, agentId })` asks the broker.
 
 Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error` data for your reply, and never leaks the message of an error that isn't ours.
 
@@ -255,7 +254,7 @@ Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error
 | Function | Purpose |
 |---|---|
 | `buildAgentCardExtension({ agentId, scopeRequirements, required, brokerUrl?, minimumIdentityAssurance?, description? })` | Agent card entry |
-| `parseAgentCardExtension(extensions)` | Read a card's Parafé entry (v2 or v1 URI), or `null` |
+| `parseAgentCardExtension(extensions)` | Read a card's Parafé entry, or `null` |
 | `withParafe(message, data)` | Copy of `message` with Parafé data in metadata and the URI in `extensions` |
 | `withConsentToken(message, token, sessionId, proof?)` | Shorthand for `withParafe(message, { consent: … })` |
 | `withSessionClosed(message, sessionId, receipt)` / `extractSessionClosed(message)` | Tell the other side the session is over, with the receipt JWS |
@@ -264,7 +263,7 @@ Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error
 | `signActionReceipt(privateKey, agentDid, input)` / `fileActionReceipt(receipt, { sessionId, credential, privateKey })` | The same, as functions |
 | `withActionReceipts(message, receipts)` / `extractActionReceipts(message)` | Attach the action receipts you signed (beside any other Parafé data, or alone); read them |
 | `verifyPresentationProof(proof, token, claims, options?)` | Check a proof yourself |
-| `readParafe(message, { acceptV1? })` | The message's Parafé data, or `null` |
+| `readParafe(message)` | The message's Parafé data, or `null` |
 | `extractHandshakeChallenge` / `extractHandshakeComplete` / `extractConsentToken` / `extractParafeError` `(message)` | One member, or `null` |
 | `hasParafeData(message)` | Any Parafé data present? |
 | `parafeErrorData(err)` | `{ error: { code, message }, action_receipts? }` for a refusal |
@@ -275,11 +274,20 @@ Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error
 | `verifyConsentTokenOnline(token, options)` | Verify via the broker's `/consent/verify` |
 | `createBrokerKeyCache(brokerUrl?, { minRefetchIntervalMs? })` | The broker's signing keys, refetched when a token names a new key (use this) |
 | `fetchBrokerKeys(brokerUrl?)` | The broker's signing keys (JWKS), fetched once |
-| `fetchBrokerPublicKey(brokerUrl?)` | The broker's retired Ed25519 key, as PEM (tokens before 2026-09-30) |
 
 Messages can be `@a2a-js/sdk` `Message` objects or raw A2A 1.0 / 0.3 JSON.
 
 ---
+
+## Migrating from 2.x
+
+3.0 removes what only older brokers and 1.x senders needed:
+
+- **`requireProof` defaults to true.** A consent token sent without a presentation proof is refused (`InvalidProofError`). Initiators using `@getparafe/sdk` or `createPresentationProof()` already send one. Pass `requireProof: false` to accept tokens without a proof.
+- **Broker keys are a JWKS.** `fetchBrokerPublicKey()` and PEM keys are gone: pass `fetchBrokerKeys()` or, better, `createBrokerKeyCache()`. Only ES256 consent tokens verify (the broker has signed ES256 since 2026-09-30).
+- **`claims.exclusions` only.** The verifier no longer sets the old `claims.excluded`; a token without `exclusions` is refused.
+- **No v1 data.** Readers ignore 1.x-style data parts, `acceptV1` and `ReadParafeOptions` are gone, `parseAgentCardExtension` ignores the v1 URI, and `PARAFE_EXTENSION_URI_V1` and the `PARAFE_V1_*` constants are removed.
+- Agent cards may require `minimum_identity_assurance: 'claimed'` (an agent its owner approved).
 
 ## Migrating from 1.x
 
@@ -288,12 +296,10 @@ Messages can be `@a2a-js/sdk` `Message` objects or raw A2A 1.0 / 0.3 JSON.
 - **Parafé data moved from message parts to message metadata.** `buildConsentTokenPart()`, `buildHandshakeChallenge()` and `buildHandshakeComplete()` are gone. Use `withConsentToken()` / `withParafe()` on the whole message. 1.x data parts were silently emptied by the A2A 1.0 client, and never found by 1.x readers on A2A 1.0 servers.
 - **Readers take the whole message**, not `message.parts`: `extractConsentToken(message)`, `verifyMessageConsentToken(message, key, { agentId })`.
 - **`agentId` is required** when verifying a message: tokens issued for another agent are rejected (`WrongAudienceError`).
-- **New extension URI**: `https://parafe.ai/extensions/a2a/v2`. `parseAgentCardExtension` still recognizes v1 cards.
+- **New extension URI**: `https://parafe.ai/extensions/a2a/v2`.
 - **Activation header**: `A2A-Extensions` on A2A 1.0 (was `X-A2A-Extensions`, now only for A2A 0.3).
 - **`required` must be set** in `buildAgentCardExtension`.
 - `MalformedDataPartError` is now `MalformedParafeDataError` (`MALFORMED_PARAFE_DATA`). The `/compat` export is removed.
-
-Agents on 2.x still **read** 1.x-style data parts (all three wire shapes) until 2027-03-31. Pass `{ acceptV1: false }` to turn that off. A 1.x client only activates the v1 URI, so it can reach agents that declare `required: false`.
 
 ---
 

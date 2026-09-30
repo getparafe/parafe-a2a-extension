@@ -6,12 +6,12 @@
  * client and as raw A2A 1.0 and 0.3 JSON-RPC, the way non-SDK clients send them.
  * No network beyond localhost.
  */
-import { randomUUID } from 'node:crypto';
+import { randomUUID, generateKeyPairSync } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
-import { SignJWT, exportSPKI, generateKeyPair } from 'jose';
+import { SignJWT, exportJWK, generateKeyPair, calculateJwkThumbprint, type JWK } from 'jose';
 import { A2A_PROTOCOL_VERSION, Role, type AgentCard, type Message } from '@a2a-js/sdk';
 import { duplicateInterfacesForLegacy } from '@a2a-js/sdk/compat/v0_3';
 import { AgentEvent, DefaultRequestHandler, InMemoryTaskStore, type AgentExecutor, type ExecutionEventBus, type RequestContext } from '@a2a-js/sdk/server';
@@ -21,7 +21,7 @@ import {
   PARAFE_EXTENSION_URI,
   activationHeaders,
   buildAgentCardExtension,
-  extractConsentToken,
+  createPresentationProof,
   extractHandshakeComplete,
   extractParafeError,
   parafeErrorData,
@@ -30,6 +30,7 @@ import {
   verifyMessageConsentToken,
   withConsentToken,
   withParafe,
+  type BrokerKeys,
   type ScopeRequirement,
 } from '../../src/index.js';
 
@@ -45,7 +46,10 @@ const CHALLENGE = {
   requested_scope: 'order-donuts',
 };
 
-let brokerKey: string;
+let brokerKeys: BrokerKeys;
+// The initiator's key: consent tokens are bound to it and it signs the presentation proofs (required by default in 3.0).
+const client = generateKeyPairSync('ed25519');
+const clientJwk = client.publicKey.export({ format: 'jwk' }) as JWK;
 let sign: (claims?: Record<string, unknown>) => Promise<string>;
 let server: Server;
 let base: string;
@@ -68,8 +72,8 @@ class ShopExecutor implements AgentExecutor {
         });
         reply.parts = text('handshake complete');
       } else {
-        const { sessionId } = await verifyMessageConsentToken(ctx.userMessage, brokerKey, {
-          agentId: AGENT_ID, action: 'create_order', scopeRequirements: SCOPES,
+        const { sessionId } = await verifyMessageConsentToken(ctx.userMessage, brokerKeys, {
+          agentId: AGENT_ID, action: 'create_order', scopeRequirements: SCOPES, initiatorKey: clientJwk,
         });
         reply.parts = text(`verified ${sessionId}`);
       }
@@ -107,14 +111,16 @@ function mount(app: express.Express, path: string, required: boolean): AgentCard
 let openCard: AgentCard;
 
 beforeAll(async () => {
-  const { publicKey, privateKey } = await generateKeyPair('EdDSA', { crv: 'Ed25519' });
-  brokerKey = await exportSPKI(publicKey);
+  const { publicKey, privateKey } = await generateKeyPair('ES256');
+  brokerKeys = { keys: [{ ...(await exportJWK(publicKey)), kid: 'broker-1', alg: 'ES256' }] } as BrokerKeys;
+  const jkt = await calculateJwkThumbprint(clientJwk);
   sign = (claims = {}) =>
     new SignJWT({
-      scope: 'order-donuts', permissions: ['read_menu', 'create_order'], excluded: [], session_id: 'sess_1',
+      scope: 'order-donuts', permissions: ['read_menu', 'create_order'], exclusions: [], session_id: 'sess_1',
       token_type: 'consent', authorization_modality: 'attested', initiator_agent_id: 'prf_agent_client', target_agent_id: AGENT_ID,
-      ...claims,
-    }).setProtectedHeader({ alg: 'EdDSA' }).setIssuer('parafe-trust-broker').setIssuedAt().setExpirationTime('5m').sign(privateKey);
+      cnf: { jkt }, ...claims,
+    }).setProtectedHeader({ alg: 'ES256', kid: 'broker-1' }).setIssuer('parafe-trust-broker').setSubject('prf_agent_client')
+      .setAudience(`did:web:api.parafe.ai:agents:${AGENT_ID}`).setIssuedAt().setExpirationTime('5m').sign(privateKey);
 
   const app = express();
   server = await new Promise<Server>((resolve) => { const s = app.listen(0, () => resolve(s)); });
@@ -144,6 +150,12 @@ async function send(client: Awaited<ReturnType<ClientFactory['createFromUrl']>>,
   )) as Message;
 }
 
+/** The message with a fresh consent token and the initiator's proof, bound to the message ID. */
+async function consented<M extends { messageId: string }>(message: M, claims: Record<string, unknown> = {}) {
+  const token = await sign(claims);
+  return withConsentToken(message, token, 'sess_1', await createPresentationProof(token, client.privateKey, { messageId: message.messageId }));
+}
+
 async function rpc(path: string, headers: Record<string, string>, body: unknown) {
   const res = await fetch(`${base}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
   return { res, json: (await res.json()) as { result?: Record<string, unknown>; error?: { code: number; message: string } } };
@@ -166,8 +178,14 @@ describe('interop: agent card', () => {
 describe('interop: official A2A 1.0 client', () => {
   it('consent token in metadata reaches the agent and verifies', async () => {
     const client = await new ClientFactory().createFromUrl(base);
-    const reply = await send(client, withConsentToken(sdkMessage(), await sign(), 'sess_1'));
+    const reply = await send(client, await consented(sdkMessage()));
     expect(replyText(reply)).toBe('verified sess_1');
+  });
+
+  it('3.0: a consent token without a proof is refused', async () => {
+    const client = await new ClientFactory().createFromUrl(base);
+    const reply = await send(client, withConsentToken(sdkMessage(), await sign(), 'sess_1'));
+    expect(extractParafeError(reply)?.code).toBe('INVALID_PROOF');
   });
 
   it('handshake round trip: challenge in, handshake_complete back in the reply metadata', async () => {
@@ -186,7 +204,7 @@ describe('interop: official A2A 1.0 client', () => {
 
   it('refusals come back as Parafe error data the client can read', async () => {
     const client = await new ClientFactory().createFromUrl(base);
-    const reply = await send(client, withConsentToken(sdkMessage(), await sign({ target_agent_id: 'prf_agent_other_shop' }), 'sess_1'));
+    const reply = await send(client, await consented(sdkMessage(), { target_agent_id: 'prf_agent_other_shop' }));
     expect(replyText(reply)).toBe('refused');
     expect(extractParafeError(reply)?.code).toBe('WRONG_AUDIENCE');
   });
@@ -206,7 +224,7 @@ describe('interop: official A2A 1.0 client', () => {
 
 describe('interop: raw A2A 1.0 JSON-RPC', () => {
   it('SendMessage with metadata + A2A-Extensions verifies, and the agent echoes activation', async () => {
-    const message = withConsentToken({ messageId: randomUUID(), role: 'ROLE_USER', parts: [{ text: 'Two dozen glazed.' }] }, await sign(), 'sess_1');
+    const message = await consented({ messageId: randomUUID(), role: 'ROLE_USER', parts: [{ text: 'Two dozen glazed.' }] });
     const { res, json } = await rpc('/strict', activationHeaders('1.0'), { jsonrpc: '2.0', id: 1, method: 'SendMessage', params: { message } });
 
     expect(json.error).toBeUndefined();
@@ -230,10 +248,7 @@ describe('interop: raw A2A 1.0 JSON-RPC', () => {
 
 describe('interop: raw A2A 0.3 JSON-RPC (compatibility layer)', () => {
   it('message/send with metadata + X-A2A-Extensions verifies', async () => {
-    const message = withConsentToken(
-      { messageId: randomUUID(), role: 'user', kind: 'message', parts: [{ kind: 'text', text: 'Two dozen glazed.' }] },
-      await sign(), 'sess_1'
-    );
+    const message = await consented({ messageId: randomUUID(), role: 'user', kind: 'message', parts: [{ kind: 'text', text: 'Two dozen glazed.' }] });
     const { json } = await rpc('/strict', activationHeaders('0.3'), { jsonrpc: '2.0', id: 4, method: 'message/send', params: { message } });
 
     expect(json.error).toBeUndefined();
@@ -249,27 +264,12 @@ describe('interop: raw A2A 0.3 JSON-RPC (compatibility layer)', () => {
 });
 
 describe('interop: v1 senders (data parts)', () => {
-  it('a v1 client (A2A 0.3 data part, v1 URI) is accepted by an open agent', async () => {
-    const token = await sign();
+  it('3.0: a v1 data part is not Parafé data; the open agent answers MISSING_PARAFE_EXTENSION', async () => {
     const message = {
       messageId: randomUUID(), role: 'user', kind: 'message',
-      parts: [{ kind: 'data', data: { 'parafe.trust.ConsentToken': { token, session_id: 'sess_1' } } }, { kind: 'text', text: 'hi' }],
+      parts: [{ kind: 'data', data: { 'parafe.trust.ConsentToken': { token: await sign(), session_id: 'sess_1' } } }, { kind: 'text', text: 'hi' }],
     };
-    const { json } = await rpc('/open', { 'X-A2A-Extensions': 'https://github.com/getparafe/parafe-a2a-extension/v1' }, { jsonrpc: '2.0', id: 6, method: 'message/send', params: { message } });
-    expect((json.result!['parts'] as Array<{ text: string }>)[0]?.text).toBe('verified sess_1');
-  });
-
-  it('a v1-style data part sent through the A2A 1.0 client is read too', async () => {
-    const client = await new ClientFactory().createFromAgentCard(openCard);
-    const message = sdkMessage();
-    message.parts.push({ content: { $case: 'data', value: { 'parafe.trust.ConsentToken': { token: await sign(), session_id: 'sess_1' } } }, metadata: undefined, filename: '', mediaType: 'application/json' });
-    const reply = await send(client, message, false);
-    expect(replyText(reply)).toBe('verified sess_1');
-  });
-
-  it('the agent can tell v2 and v1 data apart only by location, not by payload', () => {
-    const v2 = withConsentToken({ parts: [] }, 't', 's');
-    const v1 = { parts: [{ data: { 'parafe.trust.ConsentToken': { token: 't', session_id: 's' } } }] };
-    expect(extractConsentToken(v2)).toEqual(extractConsentToken(v1));
+    const { json } = await rpc('/open', {}, { jsonrpc: '2.0', id: 6, method: 'message/send', params: { message } });
+    expect(extractParafeError(json.result!)?.code).toBe('MISSING_PARAFE_EXTENSION');
   });
 });
