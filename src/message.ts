@@ -1,9 +1,4 @@
-import {
-  PARAFE_EXTENSION_URI,
-  PARAFE_V1_HANDSHAKE_CHALLENGE,
-  PARAFE_V1_HANDSHAKE_COMPLETE,
-  PARAFE_V1_CONSENT_TOKEN,
-} from './constants.js';
+import { PARAFE_EXTENSION_URI } from './constants.js';
 import { MalformedParafeDataError, isParafeError } from './errors.js';
 import type {
   A2AMessageLike,
@@ -106,18 +101,8 @@ export function parafeErrorData(err: unknown): { error: ParafeErrorPayload; acti
 }
 
 // ---------------------------------------------------------------------------
-// Reading — accepts v2 metadata, and (until 2027-03-31) v1 data parts in any of
-// their three shapes: A2A 0.3 `{ kind: 'data', data }`, A2A 1.0 wire
-// `{ data }`, and @a2a-js/sdk `{ content: { $case: 'data', value } }`.
+// Reading — Parafe data lives at message.metadata[PARAFE_EXTENSION_URI].
 // ---------------------------------------------------------------------------
-
-export interface ReadParafeOptions {
-  /**
-   * Also accept v1-style Parafe data parts. Defaults to true.
-   * v1 support is planned until 2027-03-31.
-   */
-  acceptV1?: boolean;
-}
 
 /**
  * Reads the Parafe data from an A2A message. Returns null if the message has none.
@@ -125,10 +110,7 @@ export interface ReadParafeOptions {
  *
  * Pass the whole message (not `message.parts`).
  */
-export function readParafe(
-  message: A2AMessageLike,
-  options: ReadParafeOptions = {}
-): ParafeMessageData | null {
+export function readParafe(message: A2AMessageLike): ParafeMessageData | null {
   if (Array.isArray(message)) {
     throw new TypeError(
       'readParafe() takes the whole A2A message, not its parts array. Parafe data lives in message.metadata.'
@@ -139,73 +121,49 @@ export function readParafe(
   if (fromMetadata !== undefined && fromMetadata !== null) {
     return validateParafeData(fromMetadata);
   }
-
-  if (options.acceptV1 ?? true) {
-    return readV1DataParts(message.parts ?? []);
-  }
   return null;
 }
 
 /** The `handshake_challenge` in a message, or null. */
-export function extractHandshakeChallenge(
-  message: A2AMessageLike,
-  options?: ReadParafeOptions
-): HandshakeChallengePayload | null {
-  const data = readParafe(message, options);
+export function extractHandshakeChallenge(message: A2AMessageLike): HandshakeChallengePayload | null {
+  const data = readParafe(message);
   return data && 'handshake_challenge' in data ? data.handshake_challenge : null;
 }
 
 /** The `handshake_complete` in a message, or null. */
-export function extractHandshakeComplete(
-  message: A2AMessageLike,
-  options?: ReadParafeOptions
-): HandshakeCompletePayload | null {
-  const data = readParafe(message, options);
+export function extractHandshakeComplete(message: A2AMessageLike): HandshakeCompletePayload | null {
+  const data = readParafe(message);
   return data && 'handshake_complete' in data ? data.handshake_complete : null;
 }
 
 /** The `consent` (token + session ID) in a message, or null. */
-export function extractConsentToken(
-  message: A2AMessageLike,
-  options?: ReadParafeOptions
-): ConsentTokenPayload | null {
-  const data = readParafe(message, options);
+export function extractConsentToken(message: A2AMessageLike): ConsentTokenPayload | null {
+  const data = readParafe(message);
   return data && 'consent' in data ? data.consent : null;
 }
 
 /** The `error` an agent reported, or null. */
-export function extractParafeError(
-  message: A2AMessageLike,
-  options?: ReadParafeOptions
-): ParafeErrorPayload | null {
-  const data = readParafe(message, options);
+export function extractParafeError(message: A2AMessageLike): ParafeErrorPayload | null {
+  const data = readParafe(message);
   return data && 'error' in data ? data.error : null;
 }
 
 /** The `session_closed` (session ID + receipt JWS) in a message, or null. */
-export function extractSessionClosed(
-  message: A2AMessageLike,
-  options?: ReadParafeOptions
-): SessionClosedPayload | null {
-  const data = readParafe(message, options);
+export function extractSessionClosed(message: A2AMessageLike): SessionClosedPayload | null {
+  const data = readParafe(message);
   return data && 'session_closed' in data ? data.session_closed : null;
 }
 
 /** The action receipts attached to a message (2.2), or an empty list. */
-export function extractActionReceipts(message: A2AMessageLike, options?: ReadParafeOptions): string[] {
-  const data = readParafe(message, options);
+export function extractActionReceipts(message: A2AMessageLike): string[] {
+  const data = readParafe(message);
   return data?.action_receipts ?? [];
 }
 
 /** True if the message carries any Parafe data (without validating it). */
-export function hasParafeData(message: A2AMessageLike, options: ReadParafeOptions = {}): boolean {
+export function hasParafeData(message: A2AMessageLike): boolean {
   const fromMetadata = message.metadata?.[PARAFE_EXTENSION_URI];
-  if (fromMetadata !== undefined && fromMetadata !== null) return true;
-  if (!(options.acceptV1 ?? true)) return false;
-  return (message.parts ?? []).some((part) => {
-    const data = dataPartValue(part);
-    return data !== null && V1_KEYS.some((key) => key in data);
-  });
+  return fromMetadata !== undefined && fromMetadata !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,12 +295,9 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// v1 data parts
+// Data parts (AP2 artifacts travel in them; see ap2.ts)
 // ---------------------------------------------------------------------------
 
-const V1_KEYS = [PARAFE_V1_HANDSHAKE_CHALLENGE, PARAFE_V1_HANDSHAKE_COMPLETE, PARAFE_V1_CONSENT_TOKEN];
-
-/** The `data` object of a data part in any of its three shapes, or null. */
 /** The data of a DataPart in any of its shapes, or null. @internal */
 export function dataPartValue(part: unknown): Record<string, unknown> | null {
   if (!isObject(part)) return null;
@@ -354,21 +309,4 @@ export function dataPartValue(part: unknown): Record<string, unknown> | null {
   // A2A 0.3: { kind: 'data', data }. A2A 1.0 wire: { data } (no kind).
   if (part['kind'] !== undefined && part['kind'] !== 'data') return null;
   return isObject(part['data']) ? part['data'] : null;
-}
-
-function readV1DataParts(parts: readonly unknown[]): ParafeMessageData | null {
-  for (const part of parts) {
-    const data = dataPartValue(part);
-    if (data === null) continue;
-    if (PARAFE_V1_HANDSHAKE_CHALLENGE in data) {
-      return { handshake_challenge: validateChallenge(data[PARAFE_V1_HANDSHAKE_CHALLENGE], PARAFE_V1_HANDSHAKE_CHALLENGE) };
-    }
-    if (PARAFE_V1_HANDSHAKE_COMPLETE in data) {
-      return { handshake_complete: validateComplete(data[PARAFE_V1_HANDSHAKE_COMPLETE], PARAFE_V1_HANDSHAKE_COMPLETE) };
-    }
-    if (PARAFE_V1_CONSENT_TOKEN in data) {
-      return { consent: validateConsent(data[PARAFE_V1_CONSENT_TOKEN], PARAFE_V1_CONSENT_TOKEN) };
-    }
-  }
-  return null;
 }

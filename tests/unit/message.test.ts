@@ -117,55 +117,26 @@ describe('readParafe (v2 metadata)', () => {
   });
 });
 
-describe('readParafe (v1 data parts)', () => {
+describe('readParafe (3.0: no v1 data parts)', () => {
   const v1Consent = { 'parafe.trust.ConsentToken': { token: 'jwt', session_id: 's' } };
 
-  it('reads A2A 0.3 parts: { kind: "data", data }', () => {
-    const message = { parts: [{ kind: 'text', text: 'hi' }, { kind: 'data', data: v1Consent }] };
-    expect(extractConsentToken(message)).toEqual({ token: 'jwt', session_id: 's' });
+  it('ignores v1 data parts in every part shape', () => {
+    for (const part of [{ kind: 'data', data: v1Consent }, { data: v1Consent }, { content: { $case: 'data', value: v1Consent } }]) {
+      expect(readParafe({ parts: [part] })).toBeNull();
+      expect(extractConsentToken({ parts: [part] })).toBeNull();
+    }
   });
 
-  it('reads A2A 1.0 wire parts: { data } with no kind', () => {
-    const message = { parts: [{ text: 'hi' }, { data: v1Consent, mediaType: 'application/json' }] };
-    expect(extractConsentToken(message)).toEqual({ token: 'jwt', session_id: 's' });
-  });
-
-  it('reads @a2a-js/sdk parts: { content: { $case: "data", value } }', () => {
-    const message = { parts: [{ content: { $case: 'data', value: { 'parafe.handshake.Challenge': CHALLENGE } } }] };
-    expect(extractHandshakeChallenge(message)).toEqual(CHALLENGE);
-  });
-
-  it('reads a v1 handshake complete', () => {
-    const complete = { handshake_id: 'hs_1', status: 'authenticated', consent_token: 'jwt' };
-    expect(extractHandshakeComplete({ parts: [{ data: { 'parafe.handshake.Complete': complete } }] })).toEqual(complete);
-  });
-
-  it('ignores v1 parts when acceptV1 is false', () => {
-    const message = { parts: [{ kind: 'data', data: v1Consent }] };
-    expect(extractConsentToken(message, { acceptV1: false })).toBeNull();
-    expect(hasParafeData(message, { acceptV1: false })).toBe(false);
-  });
-
-  it('prefers v2 metadata over v1 parts', () => {
+  it('reads v2 metadata beside v1 parts', () => {
     const message = withConsentToken({ parts: [{ kind: 'data', data: v1Consent }] }, 'v2jwt', 's2');
     expect(extractConsentToken(message)).toEqual({ token: 'v2jwt', session_id: 's2' });
-  });
-
-  it('validates v1 payloads too', () => {
-    const message = { parts: [{ kind: 'data', data: { 'parafe.trust.ConsentToken': { token: 'jwt' } } }] };
-    expect(() => extractConsentToken(message)).toThrow(MalformedParafeDataError);
-  });
-
-  it('ignores non-Parafe and non-data parts', () => {
-    const message = { parts: [{ kind: 'file', file: { uri: 'x' } }, { data: { other: 1 } }, { content: { $case: 'text', value: 'x' } }, null, 'junk'] };
-    expect(readParafe(message)).toBeNull();
   });
 });
 
 describe('hasParafeData', () => {
-  it('is true for v2 metadata and for v1 parts', () => {
+  it('is true for v2 metadata, not for v1 parts', () => {
     expect(hasParafeData(withConsentToken(baseMessage(), 'jwt', 's'))).toBe(true);
-    expect(hasParafeData({ parts: [{ data: { 'parafe.trust.ConsentToken': {} } }] })).toBe(true);
+    expect(hasParafeData({ parts: [{ data: { 'parafe.trust.ConsentToken': {} } }] })).toBe(false);
   });
 
   it('is false otherwise', () => {

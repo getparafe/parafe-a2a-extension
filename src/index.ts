@@ -1,13 +1,9 @@
 // Constants
 export {
   PARAFE_EXTENSION_URI,
-  PARAFE_EXTENSION_URI_V1,
   A2A_EXTENSIONS_HEADER,
   A2A_EXTENSIONS_HEADER_V0_3,
   A2A_VERSION_HEADER,
-  PARAFE_V1_HANDSHAKE_CHALLENGE,
-  PARAFE_V1_HANDSHAKE_COMPLETE,
-  PARAFE_V1_CONSENT_TOKEN,
   DEFAULT_BROKER_URL,
 } from './constants.js';
 
@@ -70,7 +66,6 @@ export {
   extractParafeError,
   hasParafeData,
 } from './message.js';
-export type { ReadParafeOptions } from './message.js';
 
 // Activation headers
 export { activationHeaders, isParafeActivated } from './headers.js';
@@ -85,7 +80,6 @@ export {
 export {
   verifyConsentTokenOffline,
   verifyConsentTokenOnline,
-  fetchBrokerPublicKey,
   fetchBrokerKeys,
   createBrokerKeyCache,
   verifyMessageConsentToken,

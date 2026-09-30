@@ -1,6 +1,16 @@
 # Changelog
 
-## 2.3.0 (unreleased)
+## 3.0.0 (2026-09-30)
+
+Breaking. Removes what only older brokers and 1.x senders needed (no one runs them). See "Migrating from 2.x" in the README.
+
+- **`requireProof` defaults to true** (AP2 change request Part 7): `verifyMessageConsentToken` refuses a consent token sent without a presentation proof. `requireProof: false` accepts one.
+- **Broker keys: JWKS only.** `fetchBrokerPublicKey()`, PEM keys and the `fetchBrokerKeys()` fallback for brokers without a JWKS are removed; only ES256 consent tokens verify.
+- **`exclusions` only.** The verifier no longer sets `claims.excluded` (removed from `ParafeConsentClaims`) and refuses a token without `exclusions`; action receipts read `exclusions` only.
+- **No v1 data.** `readParafe()` and the extractors read message metadata only (`acceptV1` and `ReadParafeOptions` removed); `parseAgentCardExtension()` ignores the v1 URI; `PARAFE_EXTENSION_URI_V1` and `PARAFE_V1_*` removed.
+- **Fix:** agent cards may declare `minimum_identity_assurance: 'claimed'`; `parseAgentCardExtension()` used to return `null` for them.
+
+## 2.3.0 (2026-09-30)
 
 For the Parafé broker's AP2 v0.2 interop (AP2 change request Phase 3). Backward compatible.
 

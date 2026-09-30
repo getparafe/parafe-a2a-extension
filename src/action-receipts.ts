@@ -294,7 +294,7 @@ export function createActionReceiptSigner(options: ActionReceiptSignerOptions): 
       let exclusions: string[] = [];
       try {
         const c = decodeJwt(consent.token);
-        const ex = c['exclusions'] ?? c['excluded'];
+        const ex = c['exclusions'];
         if (Array.isArray(ex)) exclusions = ex.filter((x): x is string => typeof x === 'string');
       } catch {
         // not a readable token: consent_invalid

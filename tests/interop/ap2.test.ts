@@ -4,13 +4,13 @@
  * and as raw A2A 1.0 and 0.3 JSON-RPC. Neither payload may be dropped or
  * reshaped. The mandate is an AP2 Python SDK vector.
  */
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, createHash, generateKeyPairSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
-import { SignJWT, exportSPKI, generateKeyPair } from 'jose';
+import { SignJWT, exportJWK, generateKeyPair, calculateJwkThumbprint, type JWK } from 'jose';
 import { A2A_PROTOCOL_VERSION, Role, type AgentCard, type Message } from '@a2a-js/sdk';
 import { duplicateInterfacesForLegacy } from '@a2a-js/sdk/compat/v0_3';
 import { AgentEvent, DefaultRequestHandler, InMemoryTaskStore, type AgentExecutor, type ExecutionEventBus, type RequestContext } from '@a2a-js/sdk/server';
@@ -23,12 +23,14 @@ import {
   activationHeaders,
   buildAgentCardExtension,
   buildAp2AgentCardExtension,
+  createPresentationProof,
   parseAgentCardExtension,
   readAp2,
   extractConsentToken,
   verifyMessageConsentToken,
   withConsentToken,
   withAp2,
+  type BrokerKeys,
   type ScopeRequirement,
 } from '../../src/index.js';
 
@@ -39,8 +41,15 @@ const AGENT_ID = 'prf_agent_shop';
 const SCOPES: Record<string, ScopeRequirement> = { checkout: { permissions: ['create_order'], minimum_authorization_modality: 'delegated' } };
 const RECEIPT = 'eyJhbGciOiJFUzI1NiJ9.eyJzdGF0dXMiOiJTdWNjZXNzIn0.c2ln';
 
-let brokerKey: string;
+let brokerKeys: BrokerKeys;
 let sign: () => Promise<string>;
+const client = generateKeyPairSync('ed25519');
+const clientJwk = client.publicKey.export({ format: 'jwk' }) as JWK;
+/** The message with a consent token and the initiator's proof for this message. */
+async function consented<M extends { messageId: string }>(message: M) {
+  const token = await sign();
+  return withConsentToken(message, token, 'sess_ap2', await createPresentationProof(token, client.privateKey, { messageId: message.messageId }));
+}
 let server: Server;
 let base: string;
 
@@ -50,7 +59,7 @@ class ShopExecutor implements AgentExecutor {
     const ap2 = readAp2(ctx.userMessage);
     let text: string;
     try {
-      const { sessionId } = await verifyMessageConsentToken(ctx.userMessage, brokerKey, { agentId: AGENT_ID, action: 'create_order', scopeRequirements: SCOPES });
+      const { sessionId } = await verifyMessageConsentToken(ctx.userMessage, brokerKeys, { agentId: AGENT_ID, action: 'create_order', scopeRequirements: SCOPES, initiatorKey: clientJwk });
       text = `consent ${sessionId}; mandate ${ap2?.checkoutMandate ? sha(ap2.checkoutMandate) : 'none'}`;
     } catch (err) {
       text = `refused ${(err as Error).message}`;
@@ -68,13 +77,15 @@ class ShopExecutor implements AgentExecutor {
 }
 
 beforeAll(async () => {
-  const { publicKey, privateKey } = await generateKeyPair('EdDSA', { crv: 'Ed25519' });
-  brokerKey = await exportSPKI(publicKey);
+  const { publicKey, privateKey } = await generateKeyPair('ES256');
+  brokerKeys = { keys: [{ ...(await exportJWK(publicKey)), kid: 'broker-1', alg: 'ES256' }] } as BrokerKeys;
+  const jkt = await calculateJwkThumbprint(clientJwk);
   sign = () => new SignJWT({
-    scope: 'checkout', permissions: ['create_order'], excluded: [], session_id: 'sess_ap2', token_type: 'consent',
+    scope: 'checkout', permissions: ['create_order'], exclusions: [], session_id: 'sess_ap2', token_type: 'consent',
     authorization_modality: 'delegated', initiator_agent_id: 'prf_agent_client', target_agent_id: AGENT_ID,
-    mandate_refs: [{ family: 'checkout', closed_jwt: 'c', sd_hash: 's' }],
-  }).setProtectedHeader({ alg: 'EdDSA' }).setIssuer('parafe-trust-broker').setIssuedAt().setExpirationTime('5m').sign(privateKey);
+    mandate_refs: [{ family: 'checkout', closed_jwt: 'c', sd_hash: 's' }], cnf: { jkt },
+  }).setProtectedHeader({ alg: 'ES256', kid: 'broker-1' }).setIssuer('parafe-trust-broker').setSubject('prf_agent_client')
+    .setAudience(`did:web:api.parafe.ai:agents:${AGENT_ID}`).setIssuedAt().setExpirationTime('5m').sign(privateKey);
 
   const app = express();
   server = await new Promise<Server>((resolve) => { const s = app.listen(0, () => resolve(s)); });
@@ -115,7 +126,7 @@ describe('interop (A4): a Parafé consent token and an AP2 mandate in one messag
       parts: [{ content: { $case: 'text', value: 'Buy the gold sneakers.' }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
       metadata: undefined, extensions: [], referenceTaskIds: [],
     };
-    const both = withAp2(withConsentToken(message, await sign(), 'sess_ap2'), { checkoutMandate: MANDATE });
+    const both = withAp2(await consented(message), { checkoutMandate: MANDATE });
     expect(both.parts).toHaveLength(2);
     const reply = (await client.sendMessage(
       { tenant: '', message: both, configuration: undefined, metadata: undefined },
@@ -126,7 +137,7 @@ describe('interop (A4): a Parafé consent token and an AP2 mandate in one messag
   });
 
   it('raw A2A 1.0 JSON-RPC', async () => {
-    const message = withAp2(withConsentToken({ messageId: randomUUID(), role: 'ROLE_USER', parts: [{ text: 'Buy.' }] }, await sign(), 'sess_ap2'), { checkoutMandate: MANDATE });
+    const message = withAp2(await consented({ messageId: randomUUID(), role: 'ROLE_USER', parts: [{ text: 'Buy.' }] }), { checkoutMandate: MANDATE });
     expect(message.parts[1]).toEqual({ data: { [AP2_CHECKOUT_MANDATE_KEY]: MANDATE }, mediaType: 'application/json' });
     const json = await rpc(activationHeaders('1.0'), { jsonrpc: '2.0', id: 1, method: 'SendMessage', params: { message } });
     expect(json.error).toBeUndefined();
@@ -136,7 +147,7 @@ describe('interop (A4): a Parafé consent token and an AP2 mandate in one messag
   });
 
   it('raw A2A 0.3 JSON-RPC (compatibility layer), as the AP2 samples send it', async () => {
-    const message = withAp2(withConsentToken({ messageId: randomUUID(), role: 'user', kind: 'message', parts: [{ kind: 'text', text: 'Buy.' }] }, await sign(), 'sess_ap2'), { checkoutMandate: MANDATE });
+    const message = withAp2(await consented({ messageId: randomUUID(), role: 'user', kind: 'message', parts: [{ kind: 'text', text: 'Buy.' }] }), { checkoutMandate: MANDATE });
     expect(message.parts[1]).toEqual({ kind: 'data', data: { [AP2_CHECKOUT_MANDATE_KEY]: MANDATE } });
     expect(message.extensions).toEqual([PARAFE_EXTENSION_URI, AP2_EXTENSION_URI]);
     const json = await rpc(activationHeaders('0.3'), { jsonrpc: '2.0', id: 2, method: 'message/send', params: { message } });

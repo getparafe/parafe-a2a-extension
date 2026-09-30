@@ -3,7 +3,6 @@ import {
   buildAgentCardExtension,
   parseAgentCardExtension,
   PARAFE_EXTENSION_URI,
-  PARAFE_EXTENSION_URI_V1,
   DEFAULT_BROKER_URL,
 } from '../../src/index.js';
 
@@ -96,10 +95,13 @@ describe('parseAgentCardExtension', () => {
     scope_requirements: { 'check-menu': { permissions: ['read_menu'], minimum_authorization_modality: 'autonomous' } },
   };
 
-  it('recognizes a v1 card and reports the v1 URI', () => {
-    const result = parseAgentCardExtension([{ uri: PARAFE_EXTENSION_URI_V1, required: true, params }]);
-    expect(result?.uri).toBe(PARAFE_EXTENSION_URI_V1);
-    expect(result?.params.agent_id).toBe('prf_agent_donuts01');
+  it('3.0: ignores a v1 card', () => {
+    expect(parseAgentCardExtension([{ uri: 'https://github.com/getparafe/parafe-a2a-extension/v1', required: true, params }])).toBeNull();
+  });
+
+  it("accepts minimum_identity_assurance 'claimed' (an owner-approved agent)", () => {
+    const result = parseAgentCardExtension([{ uri: PARAFE_EXTENSION_URI, required: true, params: { ...params, minimum_identity_assurance: 'claimed' } }]);
+    expect(result?.params.minimum_identity_assurance).toBe('claimed');
   });
 
   it("B8: accepts a scope that requires 'delegated'; still refuses an unknown modality", () => {
@@ -109,9 +111,9 @@ describe('parseAgentCardExtension', () => {
     expect(parseAgentCardExtension([{ uri: PARAFE_EXTENSION_URI, required: true, params: bogus }])).toBeNull();
   });
 
-  it('prefers the v2 entry when a card lists both', () => {
+  it('finds the v2 entry beside a v1 one', () => {
     const result = parseAgentCardExtension([
-      { uri: PARAFE_EXTENSION_URI_V1, required: true, params: { ...params, agent_id: 'prf_agent_v1' } },
+      { uri: 'https://github.com/getparafe/parafe-a2a-extension/v1', required: true, params: { ...params, agent_id: 'prf_agent_v1' } },
       { uri: PARAFE_EXTENSION_URI, required: false, params: { ...params, agent_id: 'prf_agent_v2' } },
     ]);
     expect(result?.uri).toBe(PARAFE_EXTENSION_URI);

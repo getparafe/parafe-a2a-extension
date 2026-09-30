@@ -37,7 +37,7 @@ const SHOP_DID = 'did:web:api.parafe.ai:agents:prf_agent_shop';
 async function token(extra: Record<string, unknown> = {}, exp = '5m'): Promise<string> {
   return new SignJWT({
     ver: 2, token_type: 'consent', scope: 'place-order', permissions: ['create_order'],
-    exclusions: ['issue_refund'], excluded: ['issue_refund'], session_id: 'sess_1',
+    exclusions: ['issue_refund'], session_id: 'sess_1',
     authorization_modality: 'attested', initiator_agent_id: 'prf_agent_alex', target_agent_id: 'prf_agent_shop',
     cnf: { jkt: await calculateJwkThumbprint(initiator.publicKey.export({ format: 'jwk' }) as JWK) }, ...extra,
   }).setProtectedHeader({ alg: 'ES256', kid: 'es-1' }).setIssuer('parafe-trust-broker')
@@ -124,7 +124,7 @@ describe('verifyMessageConsentToken() with receipts', () => {
     const expired = await verifyMessageConsentToken(await message(await token({}, '-1s'), false), KEYS, { agentId: 'prf_agent_shop', action: 'create_order', receipts }).catch((e) => e);
     expect(expired).toBeInstanceOf(ExpiredConsentTokenError);
     expect(decodeJwt(expired.actionReceipt).error).toBe('consent_expired');
-    const noProof = await verifyMessageConsentToken(await message(tok, false), KEYS, { agentId: 'prf_agent_shop', action: 'create_order', receipts, requireProof: true }).catch((e) => e);
+    const noProof = await verifyMessageConsentToken(await message(tok, false), KEYS, { agentId: 'prf_agent_shop', action: 'create_order', receipts }).catch((e) => e); // 3.0: required by default
     expect(noProof).toBeInstanceOf(InvalidProofError);
     expect(decodeJwt(noProof.actionReceipt).error).toBe('proof_invalid');
     const wrongAud = await verifyMessageConsentToken(await message(tok, false), KEYS, { agentId: 'prf_agent_other', action: 'create_order', receipts }).catch((e) => e);
@@ -133,7 +133,7 @@ describe('verifyMessageConsentToken() with receipts', () => {
   });
 
   it('without receipts, nothing is signed; completeAction() explains', async () => {
-    const { completeAction } = await verifyMessageConsentToken(await message(await token(), false), KEYS, { agentId: 'prf_agent_shop', action: 'create_order' });
+    const { completeAction } = await verifyMessageConsentToken(await message(await token(), false), KEYS, { agentId: 'prf_agent_shop', action: 'create_order', requireProof: false });
     await expect(completeAction()).rejects.toThrow(/receipts/);
     const err = await verifyMessageConsentToken(await message(await token(), false), KEYS, { agentId: 'prf_agent_shop', action: 'issue_refund' }).catch((e) => e);
     expect(err.actionReceipt).toBeUndefined();

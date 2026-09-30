@@ -1,6 +1,6 @@
 /**
- * 2.1: broker keys by kid (ES256), consent token v2 (exclusions, cnf,
- * initiator_proof), presentation proofs, and session_closed.
+ * Broker keys by kid (ES256), consent tokens (exclusions, cnf, initiator_proof),
+ * presentation proofs (required by default in 3.0), and session_closed.
  */
 import { describe, it, expect } from 'vitest';
 import { generateKeyPairSync, createHash, randomUUID } from 'node:crypto';
@@ -27,7 +27,6 @@ const KEYS: BrokerKeys = {
     { ...(legacy.publicKey.export({ format: 'jwk' }) as JWK), kid: 'ed-1', alg: 'EdDSA', status: 'retired' } as BrokerKeys['keys'][number],
   ],
 };
-const LEGACY_PEM = legacy.publicKey.export({ type: 'spki', format: 'pem' }) as string;
 
 const initiator = generateKeyPairSync('ed25519');
 const initiatorJwk = initiator.publicKey.export({ format: 'jwk' }) as JWK;
@@ -36,7 +35,7 @@ const SHOP_DID = 'did:web:api.parafe.ai:agents:prf_agent_shop';
 async function tokenV2(extra: Record<string, unknown> = {}): Promise<string> {
   return new SignJWT({
     ver: 2, token_type: 'consent', scope: 'place-order', permissions: ['create_order'],
-    exclusions: ['issue_refund'], excluded: ['issue_refund'], session_id: 'sess_1',
+    exclusions: ['issue_refund'], session_id: 'sess_1',
     authorization_modality: 'attested', initiator_agent_id: 'prf_agent_alex', target_agent_id: 'prf_agent_shop',
     cnf: { jkt: await calculateJwkThumbprint(initiatorJwk) }, initiator_proof: 'pop', ...extra,
   }).setProtectedHeader({ alg: 'ES256', kid: 'es-1' }).setIssuer('parafe-trust-broker')
@@ -45,24 +44,17 @@ async function tokenV2(extra: Record<string, unknown> = {}): Promise<string> {
 }
 
 describe('broker keys and consent token v2', () => {
-  it('verifies an ES256 token against the JWKS and sets exclusions and excluded', async () => {
+  it('verifies an ES256 token against the JWKS', async () => {
     const claims = await verifyConsentTokenOffline(await tokenV2(), KEYS, { agentId: 'prf_agent_shop' });
     expect(claims.exclusions).toEqual(['issue_refund']);
-    expect(claims.excluded).toEqual(['issue_refund']);
     expect(claims.initiator_proof).toBe('pop');
     expect(claims.aud).toBe(SHOP_DID);
   });
 
-  it('still verifies a pre-2026-09-30 EdDSA token with a PEM key, reading `excluded`', async () => {
-    const old = await new SignJWT({ token_type: 'consent', scope: 's', permissions: ['a'], excluded: ['b'], session_id: 'sess_1', authorization_modality: 'autonomous' })
-      .setProtectedHeader({ alg: 'EdDSA' }).setIssuer('parafe-trust-broker').setIssuedAt().setExpirationTime('5m').sign(legacy.privateKey);
-    const claims = await verifyConsentTokenOffline(old, LEGACY_PEM);
-    expect(claims.exclusions).toEqual(['b']);
-    await expect(verifyConsentTokenOffline(old, LEGACY_PEM, 'b')).rejects.toBeInstanceOf(ScopeViolationError);
-  });
-
-  it('a PEM key with an ES256 token explains what to do', async () => {
-    await expect(verifyConsentTokenOffline(await tokenV2(), LEGACY_PEM)).rejects.toThrow(/fetchBrokerKeys/);
+  it('3.0: refuses a token signed by the retired Ed25519 key, even though the JWKS lists it', async () => {
+    const old = await new SignJWT({ token_type: 'consent', scope: 's', permissions: ['a'], exclusions: [], session_id: 'sess_1', authorization_modality: 'autonomous' })
+      .setProtectedHeader({ alg: 'EdDSA', kid: 'ed-1' }).setIssuer('parafe-trust-broker').setIssuedAt().setExpirationTime('5m').sign(legacy.privateKey);
+    await expect(verifyConsentTokenOffline(old, KEYS)).rejects.toBeInstanceOf(InvalidConsentTokenError);
   });
 
   it('enforces minimum_initiator_proof from the scope requirements', async () => {
@@ -103,10 +95,10 @@ describe('presentation proofs', () => {
     await expect(verifyMessageConsentToken(await message(token, stale), KEYS, opts)).rejects.toBeInstanceOf(InvalidProofError);
   });
 
-  it('without a proof: accepted by default in 2.x, refused with requireProof', async () => {
+  it('3.0: without a proof, refused by default; accepted with requireProof: false', async () => {
     const token = await tokenV2();
-    expect((await verifyMessageConsentToken(await message(token), KEYS, opts)).proofVerified).toBe(false);
-    await expect(verifyMessageConsentToken(await message(token), KEYS, { ...opts, requireProof: true })).rejects.toBeInstanceOf(InvalidProofError);
+    await expect(verifyMessageConsentToken(await message(token), KEYS, opts)).rejects.toThrow(/requires a presentation proof/);
+    expect((await verifyMessageConsentToken(await message(token), KEYS, { ...opts, requireProof: false })).proofVerified).toBe(false);
   });
 
   it('P-256 initiators sign ES256', async () => {
@@ -118,7 +110,7 @@ describe('presentation proofs', () => {
     expect(r.proofVerified).toBe(true);
   });
 
-  it('createPresentationProof refuses a token issued before key binding', async () => {
+  it('createPresentationProof refuses a token with no audience', async () => {
     const old = await new SignJWT({ token_type: 'consent' }).setProtectedHeader({ alg: 'EdDSA' }).sign(legacy.privateKey);
     await expect(createPresentationProof(old, initiator.privateKey)).rejects.toBeInstanceOf(InvalidConsentTokenError);
   });
@@ -152,7 +144,7 @@ describe('createBrokerKeyCache (FRICTION #68: a key added after startup)', () =>
     try {
       const cache = createBrokerKeyCache('https://broker.test', { minRefetchIntervalMs: 0 });
       expect((await verifyConsentTokenOffline(await tokenV2(), cache)).scope).toBe('place-order'); // first fetch
-      const rotated = await new SignJWT({ token_type: 'consent', scope: 's', permissions: [], session_id: 'sess_1', authorization_modality: 'autonomous' })
+      const rotated = await new SignJWT({ token_type: 'consent', scope: 's', permissions: [], exclusions: [], session_id: 'sess_1', authorization_modality: 'autonomous' })
         .setProtectedHeader({ alg: 'ES256', kid: 'es-2' }).setIssuer('parafe-trust-broker').setIssuedAt().setExpirationTime('5m').sign(newKey.privateKey);
       expect((await verifyConsentTokenOffline(rotated, cache)).scope).toBe('s');
       expect(calls).toBe(2);

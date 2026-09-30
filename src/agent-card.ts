@@ -1,4 +1,4 @@
-import { PARAFE_EXTENSION_URI, PARAFE_EXTENSION_URI_V1, DEFAULT_BROKER_URL } from './constants.js';
+import { PARAFE_EXTENSION_URI, DEFAULT_BROKER_URL } from './constants.js';
 import type {
   ParafeAgentCardExtension,
   ParafeExtensionParams,
@@ -54,8 +54,6 @@ export function buildAgentCardExtension(
 
 /**
  * Finds and parses a Parafe extension entry from an AgentCard's capabilities.extensions array.
- * Recognizes the v2 URI and the v1 URI (preferring v2 if a card lists both).
- * The returned `uri` tells you which one the agent declared.
  * Returns null if no valid Parafe extension is found.
  *
  * Use this when your agent fetches another agent's AgentCard and wants to determine
@@ -74,9 +72,7 @@ export function parseAgentCardExtension(
   extensions: ReadonlyArray<{ uri: string; [key: string]: unknown }> | null | undefined
 ): ParafeAgentCardExtension | null {
   const list = extensions ?? [];
-  const entry =
-    list.find((ext) => ext?.uri === PARAFE_EXTENSION_URI) ??
-    list.find((ext) => ext?.uri === PARAFE_EXTENSION_URI_V1);
+  const entry = list.find((ext) => ext?.uri === PARAFE_EXTENSION_URI);
   if (!entry) return null;
 
   const params = entry['params'] as Record<string, unknown> | undefined;
@@ -87,7 +83,7 @@ export function parseAgentCardExtension(
   if (typeof params['broker_url'] !== 'string') return null;
 
   const identityAssurance = params['minimum_identity_assurance'];
-  if (identityAssurance !== 'registered' && identityAssurance !== 'self_registered') return null;
+  if (identityAssurance !== 'self_registered' && identityAssurance !== 'registered' && identityAssurance !== 'claimed') return null;
 
   const scopeReqs = params['scope_requirements'];
   if (!scopeReqs || typeof scopeReqs !== 'object') return null;

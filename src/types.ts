@@ -151,14 +151,14 @@ export interface ParafeExtensionParams {
   /** URL of the Parafe broker this agent uses. */
   broker_url: string;
   /** Minimum identity assurance accepted. */
-  minimum_identity_assurance: 'registered' | 'self_registered';
+  minimum_identity_assurance: 'self_registered' | 'registered' | 'claimed';
   /** Scope requirements keyed by scope name. */
   scope_requirements: Record<string, ScopeRequirement>;
 }
 
 /** The Parafe extension entry for an AgentCard's capabilities.extensions array. */
 export interface ParafeAgentCardExtension {
-  /** PARAFE_EXTENSION_URI, or PARAFE_EXTENSION_URI_V1 when parsed from a v1 card. */
+  /** PARAFE_EXTENSION_URI. */
   uri: string;
   required: boolean;
   description?: string | undefined;
@@ -181,7 +181,7 @@ export interface BuildAgentCardOptions {
   /** Parafe broker URL. Defaults to DEFAULT_BROKER_URL. */
   brokerUrl?: string;
   /** Minimum identity assurance accepted. Defaults to 'self_registered'. */
-  minimumIdentityAssurance?: 'registered' | 'self_registered';
+  minimumIdentityAssurance?: 'self_registered' | 'registered' | 'claimed';
   /** Optional description. */
   description?: string;
 }
@@ -199,13 +199,8 @@ export interface ParafeConsentClaims {
   scope: string;
   /** Array of permitted actions within this scope. */
   permissions: string[];
-  /**
-   * Explicitly excluded actions. Consent token v2 (broker 2026-09-30+) calls the
-   * claim `exclusions`; older tokens `excluded`. The verifier sets both.
-   */
+  /** Explicitly excluded actions. */
   exclusions: string[];
-  /** The pre-v2 name of `exclusions`; also set by the verifier. */
-  excluded: string[];
   /** 2 for key-bound tokens. */
   ver?: number;
   /** Initiator agent ID (v2). */
@@ -269,8 +264,8 @@ export interface VerifyConsentOptions {
 export interface VerifyMessageOptions extends Omit<VerifyConsentOptions, 'sessionId'> {
   agentId: string;
   /**
-   * Require a presentation proof with the token (key binding). Default false in
-   * 2.x; true in 3.0. A proof that is sent is always checked.
+   * Require a presentation proof with the token (key binding). Default true:
+   * a token sent without a proof is refused. A proof that is sent is always checked.
    */
   requireProof?: boolean;
   /**
