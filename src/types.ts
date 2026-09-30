@@ -132,6 +132,16 @@ export interface ScopeRequirement {
    * too when it's in the agent's registered scope policy.
    */
   minimum_initiator_proof?: 'pop' | 'credential';
+  /**
+   * Floors on the initiator's reputation signals (2.2; broker B18). Declared
+   * here so clients know before they ask; the broker enforces them when they
+   * are in the agent's registered scope policy (a consent token can't carry them).
+   */
+  minimum_tenure_days?: number;
+  minimum_session_completion_rate?: number;
+  maximum_denied_requests_30d?: number;
+  minimum_unique_counterparties?: number;
+  minimum_handshake_success_rate?: number;
 }
 
 /** The params block inside a Parafe AgentCard extension entry. */
