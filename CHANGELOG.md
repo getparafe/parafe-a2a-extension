@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.1.0 (unreleased)
+## 2.1.0 (2026-09-30)
 
 For the Parafé broker's 2026-09-30 formats (AP2 change request Phase 1). Backward compatible.
 
