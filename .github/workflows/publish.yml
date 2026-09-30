@@ -29,9 +29,9 @@ jobs:
       # Refuse to publish if the release tag (e.g. v2.0.1) doesn't match package.json.
       - name: Check release tag matches package version
         run: |
-          @getparafe/a2a-extension_VERSION="v$(node -p "require('./package.json').version")"
-          if [ "$@getparafe/a2a-extension_VERSION" != "${{ github.event.release.tag_name }}" ]; then
-            echo "Release tag ${{ github.event.release.tag_name }} does not match package.json version $@getparafe/a2a-extension_VERSION"
+          PKG_VERSION="v$(node -p "require('./package.json').version")"
+          if [ "$PKG_VERSION" != "${{ github.event.release.tag_name }}" ]; then
+            echo "Release tag ${{ github.event.release.tag_name }} does not match package.json version $PKG_VERSION"
             exit 1
           fi
 
