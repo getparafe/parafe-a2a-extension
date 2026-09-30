@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.2.0 (unreleased)
+## 2.2.0 (2026-09-30)
 
 For the Parafé broker's action receipts (AP2 change request B6). Backward compatible: a 2.1 reader ignores `action_receipts` beside another member, but refuses a message whose only Parafé data is `action_receipts`, so move clients to 2.2 before agents send receipts alone.
 
