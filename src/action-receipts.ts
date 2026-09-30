@@ -60,6 +60,16 @@ export interface ActionReceiptAck {
   acknowledgment: string;
   /** True when it was already filed (by you or the other agent). */
   duplicate: boolean;
+  /**
+   * A3, for receipts that name an AP2 mandate (null otherwise): whether it
+   * matched a mandate this receipt's issuer (or the handshake) verified in the
+   * session, that closed-mandate hash, who verified it, and whose trust list
+   * it passed (`scope_policy`, `broker`, `request`).
+   */
+  reference_verified: boolean | null;
+  mandate_ref: string | null;
+  mandate_verified_by: string | null;
+  mandate_issuer_source: string | null;
 }
 
 export interface RecordedActionReceipt {
@@ -201,6 +211,7 @@ export async function fileActionReceipt(
     body: JSON.stringify({ receipt, ...(opts.kind ? { kind: opts.kind } : {}) }),
   });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  const claims = (body['claims'] && typeof body['claims'] === 'object' ? body['claims'] : {}) as Record<string, unknown>;
   const ack = (duplicate: boolean): ActionReceiptAck => ({
     session_id: body['session_id'] as string,
     seq: body['seq'] as number,
@@ -208,6 +219,10 @@ export async function fileActionReceipt(
     entry_hash: body['entry_hash'] as string,
     acknowledgment: body['acknowledgment'] as string,
     duplicate,
+    reference_verified: typeof claims['reference_verified'] === 'boolean' ? claims['reference_verified'] : null,
+    mandate_ref: typeof claims['mandate_ref'] === 'string' ? claims['mandate_ref'] : null,
+    mandate_verified_by: typeof claims['mandate_verified_by'] === 'string' ? claims['mandate_verified_by'] : null,
+    mandate_issuer_source: typeof claims['mandate_issuer_source'] === 'string' ? claims['mandate_issuer_source'] : null,
   });
   if (res.status === 201) return ack(false);
   if (res.status === 409 && body['error'] === 'duplicate_receipt' && typeof body['acknowledgment'] === 'string') return ack(true);

@@ -74,12 +74,12 @@ describe('the signer files AP2 receipts with their kind', () => {
     const calls: { url: string; body: Record<string, unknown> }[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url, body: JSON.parse(String(init?.body)) });
-      return new Response(JSON.stringify({ session_id: 's1', seq: 1, receipt_hash: 'h', entry_hash: 'e', acknowledgment: 'ack' }), { status: 201 });
+      return new Response(JSON.stringify({ session_id: 's1', seq: 1, receipt_hash: 'h', entry_hash: 'e', acknowledgment: 'ack', claims: { reference_verified: true, mandate_ref: 'c', mandate_verified_by: 'prf_agent_shop', mandate_issuer_source: 'scope_policy' } }), { status: 201 });
     }));
     const signer = createActionReceiptSigner({ agentId: 'prf_agent_shop', privateKey: merchantKey, credential: 'cred', brokerUrl: 'https://broker.test', agentDid: 'did:web:broker.test:agents:prf_agent_shop' });
     const r = await signer.ap2Receipt('s1', { kind: 'checkout', mandate: checkoutVector.chain, orderId: 'ord_9' });
     expect(r.claims.iss).toBe('did:web:broker.test:agents:prf_agent_shop');
-    expect(await r.filed).toMatchObject({ seq: 1, duplicate: false });
+    expect(await r.filed).toMatchObject({ seq: 1, duplicate: false, reference_verified: true, mandate_ref: 'c', mandate_verified_by: 'prf_agent_shop', mandate_issuer_source: 'scope_policy' });
     expect(calls[0]).toMatchObject({ url: 'https://broker.test/sessions/s1/action-receipts', body: { receipt: r.receipt, kind: 'ap2.checkout_receipt' } });
   });
 });
