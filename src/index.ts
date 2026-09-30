@@ -84,8 +84,9 @@ export {
   verifyConsentTokenOnline,
   fetchBrokerPublicKey,
   fetchBrokerKeys,
+  createBrokerKeyCache,
   verifyMessageConsentToken,
   verifyPresentationProof,
   createPresentationProof,
 } from './verification.js';
-export type { ConsentVerifyResult } from './verification.js';
+export type { ConsentVerifyResult, BrokerKeyCache } from './verification.js';

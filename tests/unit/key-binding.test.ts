@@ -135,3 +135,35 @@ describe('session_closed', () => {
     expect(() => extractSessionClosed(msg)).toThrow();
   });
 });
+
+describe('createBrokerKeyCache (FRICTION #68: a key added after startup)', () => {
+  it('refetches once when a token names a key it does not have, and rate-limits refetches', async () => {
+    const { vi } = await import('vitest');
+    const { createBrokerKeyCache } = await import('../../src/index.js');
+    const newKey = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const newJwk = { ...(newKey.publicKey.export({ format: 'jwk' }) as JWK), kid: 'es-2', alg: 'ES256', status: 'active' };
+    let calls = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => {
+      calls++;
+      const body = calls === 1 ? KEYS : { keys: [...KEYS.keys, newJwk] };
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      const cache = createBrokerKeyCache('https://broker.test', { minRefetchIntervalMs: 0 });
+      expect((await verifyConsentTokenOffline(await tokenV2(), cache)).scope).toBe('place-order'); // first fetch
+      const rotated = await new SignJWT({ token_type: 'consent', scope: 's', permissions: [], session_id: 'sess_1', authorization_modality: 'autonomous' })
+        .setProtectedHeader({ alg: 'ES256', kid: 'es-2' }).setIssuer('parafe-trust-broker').setIssuedAt().setExpirationTime('5m').sign(newKey.privateKey);
+      expect((await verifyConsentTokenOffline(rotated, cache)).scope).toBe('s');
+      expect(calls).toBe(2);
+
+      const limited = createBrokerKeyCache('https://broker.test', { minRefetchIntervalMs: 60_000 });
+      calls = 0;
+      await limited.get();
+      await expect(verifyConsentTokenOffline(rotated, limited)).rejects.toBeInstanceOf(InvalidConsentTokenError);
+      expect(calls).toBe(1); // no refetch within the interval
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});

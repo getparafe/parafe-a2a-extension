@@ -80,7 +80,7 @@ const card = {
 import { ParafeClient } from '@getparafe/sdk';
 import {
   PARAFE_EXTENSION_URI,
-  fetchBrokerKeys,
+  createBrokerKeyCache,
   readParafe,
   verifyMessageConsentToken,
   withParafe,
@@ -88,7 +88,7 @@ import {
 } from '@getparafe/a2a-extension';
 
 const parafe = new ParafeClient({ brokerUrl: 'https://api.parafe.ai', apiKey: process.env.PARAFE_API_KEY });
-const brokerKeys = await fetchBrokerKeys(); // the broker's JWKS, once at startup
+const brokerKeys = createBrokerKeyCache(); // the broker's JWKS; refetches if the broker adds a key
 
 class ShopExecutor implements AgentExecutor {
   async execute(ctx: RequestContext, bus: ExecutionEventBus) {
@@ -198,7 +198,7 @@ The SDK picks the right activation header for the A2A version it negotiated. Sen
 | No consent token in the message | `MissingParafeExtensionError` |
 | Parafé data present but malformed | `MalformedParafeDataError` |
 
-Fetch the broker keys once with `fetchBrokerKeys()` and cache them. There's no network call per message, except the first time an initiator's key is needed to check a proof: it's fetched from the initiator's DID document at the broker and cached (pass `initiatorKey` to avoid even that). Tokens name their initiator (`sub`), their target (`aud`, a DID) and the key they're bound to (`cnf.jkt`); `claims.exclusions` and `claims.initiator_proof` (`pop` or `credential`) say what's forbidden and how the initiator proved itself. `requireProof` is off by default in 2.x and will be on in 3.0. For real-time confirmation on high-value actions, `verifyConsentTokenOnline(token, { action, agentId })` asks the broker.
+Hold the broker keys with `createBrokerKeyCache()`: it fetches them on first use and, if a token names a key it doesn't have yet (the broker rotated or added one), refetches once and retries, at most once a minute. There's no network call per message, except the first time an initiator's key is needed to check a proof: it's fetched from the initiator's DID document at the broker and cached (pass `initiatorKey` to avoid even that). Tokens name their initiator (`sub`), their target (`aud`, a DID) and the key they're bound to (`cnf.jkt`); `claims.exclusions` and `claims.initiator_proof` (`pop` or `credential`) say what's forbidden and how the initiator proved itself. `requireProof` is off by default in 2.x and will be on in 3.0. For real-time confirmation on high-value actions, `verifyConsentTokenOnline(token, { action, agentId })` asks the broker.
 
 Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error` data for your reply, and never leaks the message of an error that isn't ours.
 
@@ -224,7 +224,8 @@ Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error
 | `verifyMessageConsentToken(message, key, options)` | Extract + verify in one step |
 | `verifyConsentTokenOffline(token, key, options?)` | Verify a token locally |
 | `verifyConsentTokenOnline(token, options)` | Verify via the broker's `/consent/verify` |
-| `fetchBrokerKeys(brokerUrl?)` | The broker's signing keys (JWKS) |
+| `createBrokerKeyCache(brokerUrl?, { minRefetchIntervalMs? })` | The broker's signing keys, refetched when a token names a new key (use this) |
+| `fetchBrokerKeys(brokerUrl?)` | The broker's signing keys (JWKS), fetched once |
 | `fetchBrokerPublicKey(brokerUrl?)` | The broker's retired Ed25519 key, as PEM (tokens before 2026-09-30) |
 
 Messages can be `@a2a-js/sdk` `Message` objects or raw A2A 1.0 / 0.3 JSON.

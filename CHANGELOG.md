@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.1 (2026-09-30)
+
+- `createBrokerKeyCache()`: broker keys that refresh themselves. When a token names a key the cache doesn't have (the broker rotated or added a key), it refetches the JWKS once and retries, at most once per minute. Accepted wherever broker keys are (`verifyConsentTokenOffline`, `verifyMessageConsentToken`). A plain `fetchBrokerKeys()` result never updates, so a long-running agent that cached it rejected tokens signed by a newer key (SoHo Donuts FRICTION #68).
+
 ## 2.1.0 (2026-09-30)
 
 For the Parafé broker's 2026-09-30 formats (AP2 change request Phase 1). Backward compatible.

@@ -55,7 +55,7 @@ import type {
  */
 export async function verifyConsentTokenOffline(
   token: string,
-  brokerKeys: BrokerKeys | string,
+  brokerKeys: BrokerKeys | BrokerKeyCache | string,
   options: VerifyConsentOptions | string = {}
 ): Promise<ParafeConsentClaims> {
   const checks: VerifyConsentOptions = typeof options === 'string' ? { action: options } : options;
@@ -63,7 +63,19 @@ export async function verifyConsentTokenOffline(
 
   try {
     let payload: Record<string, unknown>;
-    if (typeof brokerKeys === 'string') {
+    if (isBrokerKeyCache(brokerKeys)) {
+      // Keys that refresh themselves: a token naming a key the cache doesn't
+      // have yet (the broker added one) triggers one refetch, then a retry.
+      const verifyWith = async (keys: BrokerKeys) =>
+        jwtVerify(token, createLocalJWKSet(keys as unknown as { keys: JWK[] }), { algorithms: ['ES256', 'EdDSA'], issuer: 'parafe-trust-broker' });
+      try {
+        ({ payload } = await verifyWith(await brokerKeys.get()));
+      } catch (err) {
+        const refreshed = (err as { code?: string }).code === 'ERR_JWKS_NO_MATCHING_KEY' ? await brokerKeys.refresh() : null;
+        if (!refreshed) throw err;
+        ({ payload } = await verifyWith(refreshed));
+      }
+    } else if (typeof brokerKeys === 'string') {
       // Legacy: the broker's Ed25519 key as PEM. Tokens since 2026-09-30 are ES256.
       if (safeHeaderAlg(token) === 'ES256') {
         throw new Error('this token is ES256 (broker 2026-09-30+); pass fetchBrokerKeys() instead of a PEM public key');
@@ -262,11 +274,53 @@ export interface ConsentVerifyResult {
   proofVerified?: boolean;
 }
 
+/** Broker keys that refresh themselves; from createBrokerKeyCache(). */
+export interface BrokerKeyCache {
+  /** The cached keys, fetched on first use. */
+  get(): Promise<BrokerKeys>;
+  /** Refetch now, unless the last fetch was under `minRefetchIntervalMs` ago (then null). */
+  refresh(): Promise<BrokerKeys | null>;
+}
+
+function isBrokerKeyCache(value: unknown): value is BrokerKeyCache {
+  return typeof value === 'object' && value !== null && typeof (value as BrokerKeyCache).refresh === 'function';
+}
+
 /**
- * Fetches the broker's signing keys (its JWKS, at /.well-known/jwks.json) for
- * verifyConsentTokenOffline() and verifyMessageConsentToken(). Call once at
- * startup and cache. On a broker from before 2026-09-30 (no JWKS) it returns
- * that broker's single Ed25519 key.
+ * The recommended way to hold the broker's keys in a long-running agent. Pass
+ * it wherever broker keys are accepted. It fetches the JWKS on first use and,
+ * when a token names a key it doesn't have (the broker rotated or added a key),
+ * refetches once and retries, at most once per `minRefetchIntervalMs`
+ * (default 60 s). A plain fetchBrokerKeys() result never updates.
+ */
+export function createBrokerKeyCache(
+  brokerUrl: string = DEFAULT_BROKER_URL,
+  options: { minRefetchIntervalMs?: number } = {}
+): BrokerKeyCache {
+  const minInterval = options.minRefetchIntervalMs ?? 60_000;
+  let keys: Promise<BrokerKeys> | null = null;
+  let fetchedAt = 0;
+  const load = () => {
+    fetchedAt = Date.now();
+    const p = fetchBrokerKeys(brokerUrl);
+    p.catch(() => { if (keys === p) keys = null; }); // a failed fetch is retried next time
+    keys = p;
+    return p;
+  };
+  return {
+    get: () => keys ?? load(),
+    async refresh() {
+      if (Date.now() - fetchedAt < minInterval) return null;
+      return load();
+    },
+  };
+}
+
+/**
+ * Fetches the broker's signing keys (its JWKS, at /.well-known/jwks.json), once.
+ * For a long-running agent prefer createBrokerKeyCache(), which also picks up
+ * keys the broker adds later. On a broker from before 2026-09-30 (no JWKS) it
+ * returns that broker's single Ed25519 key.
  */
 export async function fetchBrokerKeys(brokerUrl: string = DEFAULT_BROKER_URL): Promise<BrokerKeys> {
   let response: Response;
@@ -346,7 +400,7 @@ export async function fetchBrokerPublicKey(
  */
 export async function verifyMessageConsentToken(
   message: A2AMessageLike & { messageId?: unknown },
-  brokerKeys: BrokerKeys | string,
+  brokerKeys: BrokerKeys | BrokerKeyCache | string,
   options: VerifyMessageOptions & ReadParafeOptions
 ): Promise<{ claims: ParafeConsentClaims; sessionId: string; proofVerified: boolean }> {
   const { acceptV1, requireProof, initiatorKey, brokerUrl, ...checks } = options;
