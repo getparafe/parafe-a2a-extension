@@ -21,6 +21,7 @@ export type {
   ParafeErrorCode,
   ParafeErrorPayload,
   ParafeMessageData,
+  ParafeMessageMember,
 } from './types.js';
 
 // Types — AgentCard
@@ -58,12 +59,14 @@ export {
   withParafe,
   withConsentToken,
   withSessionClosed,
+  withActionReceipts,
   parafeErrorData,
   readParafe,
   extractHandshakeChallenge,
   extractHandshakeComplete,
   extractConsentToken,
   extractSessionClosed,
+  extractActionReceipts,
   extractParafeError,
   hasParafeData,
 } from './message.js';
@@ -90,3 +93,22 @@ export {
   createPresentationProof,
 } from './verification.js';
 export type { ConsentVerifyResult, BrokerKeyCache } from './verification.js';
+
+// Action receipts (2.2)
+export {
+  createActionReceiptSigner,
+  signActionReceipt,
+  fileActionReceipt,
+  actionErrorFor,
+  jcs,
+  ACTION_RECEIPT_TYP,
+} from './action-receipts.js';
+export type {
+  ActionErrorCode,
+  ActionReceiptKind,
+  ActionReceiptInput,
+  ActionReceiptAck,
+  RecordedActionReceipt,
+  ActionReceiptSigner,
+  ActionReceiptSignerOptions,
+} from './action-receipts.js';

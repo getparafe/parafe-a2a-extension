@@ -81,7 +81,9 @@ import {
   createPresentationProof,
   withConsentToken,
   InvalidProofError,
+  createActionReceiptSigner,
 } from '../../src/index.js';
+import { decodeJwt } from 'jose';
 
 describeIntegration('integration: key-bound consent tokens (2.1)', () => {
   it('verifies a real token by kid and checks a real presentation proof (initiator key from its DID document)', async () => {
@@ -116,5 +118,22 @@ describeIntegration('integration: key-bound consent tokens (2.1)', () => {
     const thief = generateKeyPairSync('ed25519');
     const stolen = { messageId: 'm-2', ...withConsentToken({ parts: [] }, token, done.session.session_id, await createPresentationProof(token, thief.privateKey)) };
     await expect(verifyMessageConsentToken(stolen, keys, { agentId: b.agent_id, brokerUrl: BROKER_URL as string })).rejects.toBeInstanceOf(InvalidProofError);
+
+    // 2.2: the shop receipts what it did and what it refused; the broker indexes both
+    const sessionId = done.session.session_id as string;
+    const receipts = createActionReceiptSigner({ agentId: b.agent_id, agentDid: b.did, privateKey: shop.privateKey, credential: b.credential, brokerUrl: BROKER_URL as string });
+    const orderMsg = { messageId: 'm-3', ...withConsentToken({ parts: [] }, token, sessionId, await createPresentationProof(token, alex.privateKey, { messageId: 'm-3' })) };
+    const ok = await verifyMessageConsentToken(orderMsg, keys, { agentId: b.agent_id, action: 'create_order', brokerUrl: BROKER_URL as string, receipts });
+    const done1 = await ok.completeAction({ businessRef: 'ord_ext_1' });
+    expect((await done1.filed)?.seq).toBe(1);
+    const refundMsg = { messageId: 'm-4', ...withConsentToken({ parts: [] }, token, sessionId, await createPresentationProof(token, alex.privateKey, { messageId: 'm-4' })) };
+    const refused = await verifyMessageConsentToken(refundMsg, keys, { agentId: b.agent_id, action: 'issue_refund', brokerUrl: BROKER_URL as string, receipts }).catch((e) => e);
+    expect(refused.actionReceipt).toBeTruthy();
+    await receipts.flush();
+    const closePop = await new SignJWT({ htm: 'POST', htu: `${BROKER_URL}/session/close`, session_id: sessionId, jti: randomUUID() })
+      .setProtectedHeader({ alg: 'EdDSA', typ: 'parafe-pop+jwt' }).setIssuedAt().sign(alex.privateKey);
+    const closed = await post('/session/close', { session_id: sessionId }, { Authorization: `Bearer ${a.credential}`, 'Parafe-PoP': closePop });
+    const actions = decodeJwt(closed.receipt as string)['actions'] as Array<{ action: string; result: string; error: string | null }>;
+    expect(actions.map((x) => [x.action, x.result, x.error])).toEqual([['create_order', 'success', null], ['issue_refund', 'error', 'excluded']]);
   });
 });

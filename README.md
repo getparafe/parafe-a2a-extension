@@ -40,7 +40,7 @@ All Parafé data rides in the message's **metadata**, under the extension URI, a
 }
 ```
 
-The handshake uses the same slot: `handshake_challenge` (client → agent), then `handshake_complete` (agent → client). An agent that refuses sends `error`. See the [spec](https://parafe.ai/extensions/a2a/v2) for every field.
+The handshake uses the same slot: `handshake_challenge` (client → agent), then `handshake_complete` (agent → client). An agent that refuses sends `error`. Since 2.2 the agent signs an **action receipt** for each action it performs or refuses and returns it in `action_receipts`, beside any other Parafé data in the reply; both sides can file it with the broker, and the session receipt lists every one. See the [spec](https://parafe.ai/extensions/a2a/v2) for every field.
 
 You need a Parafé account ([platform.parafe.ai](https://platform.parafe.ai)) and a registered agent. The [Parafé SDK](https://github.com/getparafe/sdk) (`@getparafe/sdk`) talks to the broker. This package handles the A2A side.
 
@@ -84,11 +84,15 @@ import {
   readParafe,
   verifyMessageConsentToken,
   withParafe,
+  withActionReceipts,
   parafeErrorData,
+  createActionReceiptSigner,
 } from '@getparafe/a2a-extension';
 
 const parafe = new ParafeClient({ brokerUrl: 'https://api.parafe.ai', apiKey: process.env.PARAFE_API_KEY });
 const brokerKeys = createBrokerKeyCache(); // the broker's JWKS; refetches if the broker adds a key
+// 2.2: sign an action receipt for what this agent does or refuses; filed with the broker in the background
+const receipts = createActionReceiptSigner({ agentId: 'prf_agent_donuts01', privateKey, credential });
 
 class ShopExecutor implements AgentExecutor {
   async execute(ctx: RequestContext, bus: ExecutionEventBus) {
@@ -104,17 +108,20 @@ class ShopExecutor implements AgentExecutor {
         });
       } else {
         // Before any action inside a Parafé scope:
-        const { claims } = await verifyMessageConsentToken(ctx.userMessage, brokerKeys, {
+        const { claims, sessionId, completeAction } = await verifyMessageConsentToken(ctx.userMessage, brokerKeys, {
           agentId: 'prf_agent_donuts01', // reject tokens issued for any other agent
           action: 'create_order',
           scopeRequirements: SCOPES, // defence in depth: scope, permissions and modality match your card
           requireProof: true, // the token must be presented by the key it's bound to
+          receipts, // a refusal is receipted automatically (the error carries it)
         });
         // … place the order; claims.authorization_modality says what human backing it has
+        const { receipt } = await completeAction({ businessRef: order.id }); // or { result: 'error', error: 'failed' }
+        reply = withActionReceipts(reply, [receipt]); // one receipt per action; several per turn is fine
       }
       ctx.context.addActivatedExtension(PARAFE_EXTENSION_URI); // echoes A2A-Extensions in the response
     } catch (err) {
-      reply = withParafe(reply, parafeErrorData(err)); // tells the client why, e.g. EXPIRED_CONSENT_TOKEN
+      reply = withParafe(reply, parafeErrorData(err)); // why (e.g. SCOPE_VIOLATION), with the signed refusal receipt
     }
     bus.publish(AgentEvent.message(reply));
     bus.finished();
@@ -123,6 +130,8 @@ class ShopExecutor implements AgentExecutor {
 ```
 
 Not using `@a2a-js/sdk`? The same functions take plain A2A JSON messages, and `isParafeActivated(req.headers)` tells you whether the request activated the extension.
+
+**Action receipts (2.2).** With `receipts`, a failed consent check signs an error receipt (`excluded`, `not_permitted`, `consent_expired`, `proof_invalid` or `consent_invalid`), files it and attaches it to the thrown error; `parafeErrorData(err)` returns it to the client in `action_receipts`, beside the `error`. On success, `completeAction()` signs and files the receipt for the outcome. Filing runs in the background: call `receipts.flush()` before you close the session. The broker learns action names, results and your `businessRef`, never the message content (`details` and `request` are sent only as hashes). Without a consent token in the message there's nothing to bind a receipt to, so none is signed.
 
 ---
 
@@ -138,6 +147,7 @@ import {
   withConsentToken,
   withSessionClosed,
   extractHandshakeComplete,
+  extractActionReceipts,
 } from '@getparafe/a2a-extension';
 
 // 1. Discover: fetch the card (at /.well-known/agent-card.json) and read the Parafé requirements
@@ -171,7 +181,10 @@ const { session_id, consent_token } = extractHandshakeComplete(reply);
 // 3. Every following message carries the token, and a proof that you hold the key it's bound to
 const message = newMessage('Two dozen glazed for 9am.');
 const proof = await parafe.createPresentationProof(consent_token, message.messageId); // or createPresentationProof(token, privateKey)
-await a2a.sendMessage({ message: withConsentToken(message, consent_token, session_id, proof) }, activate);
+const agentReply = await a2a.sendMessage({ message: withConsentToken(message, consent_token, session_id, proof) }, activate);
+
+// The agent's reply carries its signed action receipt; file your copy too, so it's indexed even if the agent doesn't
+for (const r of extractActionReceipts(agentReply)) await parafe.fileActionReceipt(session_id, r);
 
 // 4. When you close the session, tell the agent and hand it the receipt
 const receipt = await parafe.closeSession(session_id);
@@ -214,11 +227,14 @@ Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error
 | `withConsentToken(message, token, sessionId, proof?)` | Shorthand for `withParafe(message, { consent: … })` |
 | `withSessionClosed(message, sessionId, receipt)` / `extractSessionClosed(message)` | Tell the other side the session is over, with the receipt JWS |
 | `createPresentationProof(token, privateKey, { messageId? })` | Initiator: the proof to send with a key-bound token |
+| `createActionReceiptSigner({ agentId, privateKey, credential, brokerUrl?, agentDid?, file? })` | 2.2: sign (`sign`), file (`file`), both (`record`), receipt a refusal (`refuse`); `flush()` before close |
+| `signActionReceipt(privateKey, agentDid, input)` / `fileActionReceipt(receipt, { sessionId, credential, privateKey })` | The same, as functions |
+| `withActionReceipts(message, receipts)` / `extractActionReceipts(message)` | Attach the action receipts you signed (beside any other Parafé data, or alone); read them |
 | `verifyPresentationProof(proof, token, claims, options?)` | Check a proof yourself |
 | `readParafe(message, { acceptV1? })` | The message's Parafé data, or `null` |
 | `extractHandshakeChallenge` / `extractHandshakeComplete` / `extractConsentToken` / `extractParafeError` `(message)` | One member, or `null` |
 | `hasParafeData(message)` | Any Parafé data present? |
-| `parafeErrorData(err)` | `{ error: { code, message } }` for a refusal |
+| `parafeErrorData(err)` | `{ error: { code, message }, action_receipts? }` for a refusal |
 | `activationHeaders(a2aVersion?, otherExtensions?)` | HTTP headers that activate the extension |
 | `isParafeActivated(headers)` | Did this request activate it? |
 | `verifyMessageConsentToken(message, key, options)` | Extract + verify in one step |

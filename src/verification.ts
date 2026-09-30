@@ -12,6 +12,7 @@ import {
 } from 'jose';
 import { DEFAULT_BROKER_URL } from './constants.js';
 import { extractConsentToken, type ReadParafeOptions } from './message.js';
+import type { ActionReceiptInput, RecordedActionReceipt } from './action-receipts.js';
 import {
   MissingParafeExtensionError,
   InvalidConsentTokenError,
@@ -402,32 +403,60 @@ export async function verifyMessageConsentToken(
   message: A2AMessageLike & { messageId?: unknown },
   brokerKeys: BrokerKeys | BrokerKeyCache | string,
   options: VerifyMessageOptions & ReadParafeOptions
-): Promise<{ claims: ParafeConsentClaims; sessionId: string; proofVerified: boolean }> {
-  const { acceptV1, requireProof, initiatorKey, brokerUrl, ...checks } = options;
+): Promise<{
+  claims: ParafeConsentClaims;
+  sessionId: string;
+  proofVerified: boolean;
+  /** The consent token the message carried. */
+  consentToken: string;
+  /**
+   * 2.2, with `receipts`: sign (and file) the action receipt for what you did.
+   * Defaults: the checked `action`, result 'success'.
+   */
+  completeAction: (outcome?: Partial<Omit<ActionReceiptInput, 'sessionId' | 'consentToken'>>) => Promise<RecordedActionReceipt>;
+}> {
+  const { acceptV1, requireProof, initiatorKey, brokerUrl, receipts, ...checks } = options;
   const consent = extractConsentToken(message, acceptV1 === undefined ? {} : { acceptV1 });
   if (consent === null) {
     throw new MissingParafeExtensionError('No Parafe consent token found in the message.');
   }
 
-  const claims = await verifyConsentTokenOffline(consent.token, brokerKeys, {
-    ...checks,
-    sessionId: consent.session_id,
-  });
-
-  // Key binding (2.1): the token must be presented by the key it names.
+  let claims: ParafeConsentClaims;
   let proofVerified = false;
-  if (consent.proof !== undefined) {
-    await verifyPresentationProof(consent.proof, consent.token, claims, {
-      ...(initiatorKey ? { initiatorKey } : {}),
-      ...(brokerUrl ? { brokerUrl } : {}),
-      ...(typeof message.messageId === 'string' ? { messageId: message.messageId } : {}),
+  try {
+    claims = await verifyConsentTokenOffline(consent.token, brokerKeys, {
+      ...checks,
+      sessionId: consent.session_id,
     });
-    proofVerified = true;
-  } else if (requireProof) {
-    throw new InvalidProofError('this agent requires a presentation proof with the consent token');
+
+    // Key binding (2.1): the token must be presented by the key it names.
+    if (consent.proof !== undefined) {
+      await verifyPresentationProof(consent.proof, consent.token, claims, {
+        ...(initiatorKey ? { initiatorKey } : {}),
+        ...(brokerUrl ? { brokerUrl } : {}),
+        ...(typeof message.messageId === 'string' ? { messageId: message.messageId } : {}),
+      });
+      proofVerified = true;
+    } else if (requireProof) {
+      throw new InvalidProofError('this agent requires a presentation proof with the consent token');
+    }
+  } catch (err) {
+    // 2.2: a refusal gets a receipt too, signed by the agent that refused.
+    if (receipts && checks.action !== undefined && err instanceof Error) {
+      const refused = await receipts.refuse(consent, checks.action, err).catch(() => null);
+      if (refused) (err as Error & { actionReceipt?: string }).actionReceipt = refused.receipt;
+    }
+    throw err;
   }
 
-  return { claims, sessionId: consent.session_id, proofVerified };
+  const completeAction = async (outcome: Partial<Omit<ActionReceiptInput, 'sessionId' | 'consentToken'>> = {}) => {
+    if (!receipts) throw new TypeError('completeAction() needs the `receipts` option (createActionReceiptSigner())');
+    const action = outcome.action ?? checks.action;
+    if (!action) throw new TypeError('completeAction() needs an action');
+    return receipts.record({ ...outcome, action, sessionId: consent.session_id, consentToken: consent.token });
+  };
+
+  return { claims, sessionId: consent.session_id, proofVerified, consentToken: consent.token, completeAction };
 }
 
 // ---------------------------------------------------------------------------

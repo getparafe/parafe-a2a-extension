@@ -13,6 +13,7 @@ import type {
   HandshakeCompletePayload,
   ParafeErrorPayload,
   ParafeMessageData,
+  ParafeMessageMember,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -36,10 +37,15 @@ import type {
 export function withParafe<M extends A2AMessageLike>(message: M, data: ParafeMessageData): M {
   const extensions = [...(message.extensions ?? [])];
   if (!extensions.includes(PARAFE_EXTENSION_URI)) extensions.push(PARAFE_EXTENSION_URI);
+  // Action receipts already attached stay, unless `data` brings its own.
+  const prior = message.metadata?.[PARAFE_EXTENSION_URI];
+  const keep = isObject(prior) && Array.isArray(prior['action_receipts']) && !('action_receipts' in data)
+    ? { action_receipts: prior['action_receipts'] as string[] }
+    : {};
   return {
     ...message,
     extensions,
-    metadata: { ...(message.metadata ?? {}), [PARAFE_EXTENSION_URI]: data },
+    metadata: { ...(message.metadata ?? {}), [PARAFE_EXTENSION_URI]: { ...data, ...keep } },
   };
 }
 
@@ -62,6 +68,26 @@ export function withSessionClosed<M extends A2AMessageLike>(message: M, sessionI
 }
 
 /**
+ * Attach action receipts (2.2) to a message: the receipts you signed for what
+ * you did or refused in this turn. They go beside any other Parafé data in the
+ * message (e.g. `error`), or alone. Call it after withParafe().
+ */
+export function withActionReceipts<M extends A2AMessageLike>(message: M, receipts: string[]): M {
+  if (receipts.length === 0) return message;
+  const prior = message.metadata?.[PARAFE_EXTENSION_URI];
+  const base = isObject(prior) ? prior : {};
+  const existing = Array.isArray(base['action_receipts']) ? (base['action_receipts'] as string[]) : [];
+  const action_receipts = [...new Set([...existing, ...receipts])];
+  const extensions = [...(message.extensions ?? [])];
+  if (!extensions.includes(PARAFE_EXTENSION_URI)) extensions.push(PARAFE_EXTENSION_URI);
+  return {
+    ...message,
+    extensions,
+    metadata: { ...(message.metadata ?? {}), [PARAFE_EXTENSION_URI]: { ...base, action_receipts } },
+  };
+}
+
+/**
  * Parafe `error` data for a refused request. Pass one of this package's errors
  * (e.g. from verifyMessageConsentToken) to report it the way the specification
  * describes. Any other error is reported as INVALID_CONSENT_TOKEN without its message.
@@ -71,9 +97,10 @@ export function withSessionClosed<M extends A2AMessageLike>(message: M, sessionI
  *   reply = withParafe(reply, parafeErrorData(err));
  * }
  */
-export function parafeErrorData(err: unknown): { error: ParafeErrorPayload } {
+export function parafeErrorData(err: unknown): { error: ParafeErrorPayload; action_receipts?: string[] } {
   if (isParafeError(err)) {
-    return { error: { code: err.code, message: err.message } };
+    // 2.2: the refusal's signed action receipt, when verifyMessageConsentToken made one.
+    return { error: { code: err.code, message: err.message }, ...(err.actionReceipt ? { action_receipts: [err.actionReceipt] } : {}) };
   }
   return { error: { code: 'INVALID_CONSENT_TOKEN', message: 'Parafe consent could not be verified.' } };
 }
@@ -164,6 +191,12 @@ export function extractSessionClosed(
   return data && 'session_closed' in data ? data.session_closed : null;
 }
 
+/** The action receipts attached to a message (2.2), or an empty list. */
+export function extractActionReceipts(message: A2AMessageLike, options?: ReadParafeOptions): string[] {
+  const data = readParafe(message, options);
+  return data?.action_receipts ?? [];
+}
+
 /** True if the message carries any Parafe data (without validating it). */
 export function hasParafeData(message: A2AMessageLike, options: ReadParafeOptions = {}): boolean {
   const fromMetadata = message.metadata?.[PARAFE_EXTENSION_URI];
@@ -180,22 +213,44 @@ export function hasParafeData(message: A2AMessageLike, options: ReadParafeOption
 // ---------------------------------------------------------------------------
 
 const MEMBERS = ['handshake_challenge', 'handshake_complete', 'consent', 'session_closed', 'error'] as const;
+const MAX_ACTION_RECEIPTS = 50;
 
-function validateParafeData(raw: unknown): ParafeMessageData {
+function validateParafeData(raw: unknown): ParafeMessageData | null {
   if (!isObject(raw)) {
     throw new MalformedParafeDataError('metadata', 'expected an object');
   }
+  const receipts = raw['action_receipts'] === undefined ? undefined : validateActionReceipts(raw['action_receipts']);
   const present = MEMBERS.filter((m) => raw[m] !== undefined);
+  if (present.length === 0 && receipts) return { action_receipts: receipts };
+  // Forward compatibility (2.2): members this version doesn't know are ignored;
+  // data with only such members reads as no Parafé data we understand.
+  const known: readonly string[] = [...MEMBERS, 'action_receipts'];
+  if (present.length === 0 && Object.keys(raw).some((k) => !known.includes(k))) return null;
   if (present.length !== 1) {
     throw new MalformedParafeDataError(
       'metadata',
       present.length === 0
-        ? `expected one of ${MEMBERS.join(', ')}`
+        ? `expected one of ${MEMBERS.join(', ')}, or action_receipts`
         : `expected exactly one member, got ${present.join(', ')}`
     );
   }
-  const member = present[0]!;
-  const value = raw[member];
+  const member = validateMember(present[0]!, raw[present[0]!]);
+  return receipts ? { ...member, action_receipts: receipts } : member;
+}
+
+function validateActionReceipts(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ACTION_RECEIPTS) {
+    throw new MalformedParafeDataError('action_receipts', `expected an array of 1-${MAX_ACTION_RECEIPTS} action receipt JWSs`);
+  }
+  for (const r of value) {
+    if (typeof r !== 'string' || r.split('.').length !== 3) {
+      throw new MalformedParafeDataError('action_receipts', 'each entry must be an action receipt JWS');
+    }
+  }
+  return value as string[];
+}
+
+function validateMember(member: (typeof MEMBERS)[number], value: unknown): ParafeMessageMember {
   switch (member) {
     case 'handshake_challenge':
       return { handshake_challenge: validateChallenge(value, member) };

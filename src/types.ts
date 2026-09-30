@@ -98,16 +98,23 @@ export interface ParafeErrorPayload {
   message: string;
 }
 
-/**
- * The Parafe data carried in a message, at message.metadata[PARAFE_EXTENSION_URI].
- * Exactly one member is set.
- */
-export type ParafeMessageData =
+/** One Parafé member. A message's Parafé data has at most one. */
+export type ParafeMessageMember =
   | { handshake_challenge: HandshakeChallengePayload }
   | { handshake_complete: HandshakeCompletePayload }
   | { consent: ConsentTokenPayload }
   | { session_closed: SessionClosedPayload }
   | { error: ParafeErrorPayload };
+
+/**
+ * The Parafe data carried in a message, at message.metadata[PARAFE_EXTENSION_URI]:
+ * exactly one member, optionally with `action_receipts` (2.2) beside it, or
+ * `action_receipts` alone. `action_receipts` are action receipt JWSs the sender
+ * signed for what it did or refused (e.g. every action of one turn).
+ */
+export type ParafeMessageData =
+  | (ParafeMessageMember & { action_receipts?: string[] | undefined })
+  | { action_receipts: string[] };
 
 // ---------------------------------------------------------------------------
 // AgentCard types.
@@ -259,6 +266,13 @@ export interface VerifyMessageOptions extends Omit<VerifyConsentOptions, 'sessio
   initiatorKey?: JsonWebKeyLike;
   /** Broker URL for fetching the initiator's DID document. Defaults to DEFAULT_BROKER_URL. */
   brokerUrl?: string;
+  /**
+   * 2.2: action receipts. When the consent check fails, an error receipt is
+   * signed (and filed) and attached to the thrown error (`actionReceipt`;
+   * parafeErrorData() returns it). When it passes, the result's
+   * `completeAction()` signs (and files) the receipt for the outcome.
+   */
+  receipts?: import('./action-receipts.js').ActionReceiptSigner;
 }
 
 /** A public JWK (Ed25519 or P-256). */

@@ -3,6 +3,8 @@
  */
 export class MissingParafeExtensionError extends Error {
   readonly code = 'MISSING_PARAFE_EXTENSION';
+  /** 2.2: the error action receipt signed for this refusal (verifyMessageConsentToken with `receipts`). */
+  actionReceipt?: string;
 
   constructor(detail: string | string[]) {
     const msg = Array.isArray(detail)
@@ -18,6 +20,8 @@ export class MissingParafeExtensionError extends Error {
  */
 export class InvalidConsentTokenError extends Error {
   readonly code = 'INVALID_CONSENT_TOKEN';
+  /** 2.2: the error action receipt signed for this refusal (verifyMessageConsentToken with `receipts`). */
+  actionReceipt?: string;
 
   constructor(detail?: string) {
     super(
@@ -33,6 +37,8 @@ export class InvalidConsentTokenError extends Error {
  */
 export class ExpiredConsentTokenError extends Error {
   readonly code = 'EXPIRED_CONSENT_TOKEN';
+  /** 2.2: the error action receipt signed for this refusal (verifyMessageConsentToken with `receipts`). */
+  actionReceipt?: string;
   readonly expiredAt: Date;
 
   constructor(expiredAt: Date) {
@@ -50,6 +56,8 @@ export class ExpiredConsentTokenError extends Error {
  */
 export class ScopeViolationError extends Error {
   readonly code = 'SCOPE_VIOLATION';
+  /** 2.2: the error action receipt signed for this refusal (verifyMessageConsentToken with `receipts`). */
+  actionReceipt?: string;
   readonly requiredScope: string | string[];
   readonly grantedScopes: string[];
 
@@ -71,6 +79,8 @@ export class ScopeViolationError extends Error {
  */
 export class MalformedParafeDataError extends Error {
   readonly code = 'MALFORMED_PARAFE_DATA';
+  /** 2.2: the error action receipt signed for this refusal (verifyMessageConsentToken with `receipts`). */
+  actionReceipt?: string;
   readonly member: string;
 
   constructor(member: string, detail?: string) {
@@ -88,6 +98,8 @@ export class MalformedParafeDataError extends Error {
  */
 export class WrongAudienceError extends Error {
   readonly code = 'WRONG_AUDIENCE';
+  /** 2.2: the error action receipt signed for this refusal (verifyMessageConsentToken with `receipts`). */
+  actionReceipt?: string;
   readonly expectedAgentId: string;
   readonly tokenAgentId: string | null;
 
@@ -108,6 +120,8 @@ export class WrongAudienceError extends Error {
  */
 export class InvalidProofError extends Error {
   readonly code = 'INVALID_PROOF';
+  /** 2.2: the error action receipt signed for this refusal (verifyMessageConsentToken with `receipts`). */
+  actionReceipt?: string;
 
   constructor(detail: string) {
     super(`Parafe presentation proof rejected: ${detail}`);

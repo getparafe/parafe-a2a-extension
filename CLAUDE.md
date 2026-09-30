@@ -7,6 +7,7 @@ TypeScript package that adds Parafe trust to the A2A (Agent-to-Agent) protocol, 
 - `src/index.ts` — Package entry point, re-exports everything.
 - `src/message.ts` — Write Parafe data into A2A messages (`withParafe`) and read it back (`readParafe` + extractors). Data lives at `message.metadata[PARAFE_EXTENSION_URI]`, never in parts. Readers also accept v1 data parts in all three shapes (A2A 0.3 `kind`, A2A 1.0 wire, @a2a-js/sdk `content.$case`) until 2027-03-31.
 - `src/verification.ts` — Online and offline consent token verification. Broker keys by `kid` from the JWKS (`fetchBrokerKeys`; ES256, EdDSA for older tokens), runtime claim type guards, audience (`target_agent_id`), session match, scope-policy checks, presentation proofs (key-bound tokens: `createPresentationProof`, `verifyPresentationProof`, jti replay cache), HTTPS warning for non-localhost brokers.
+- `src/action-receipts.ts` — Action receipts (2.2): `createActionReceiptSigner` (sign with the agent key, file with the broker in the background, receipt refusals), `signActionReceipt`, `fileActionReceipt`, `actionErrorFor`, `jcs`. `verifyMessageConsentToken` takes the signer as `receipts`. Receipts travel as `action_receipts` (a list beside any member, or alone; `withActionReceipts`/`extractActionReceipts`).
 - `src/headers.ts` — A2A activation headers (`A2A-Extensions`, and `X-A2A-Extensions` for A2A 0.3).
 - `src/agent-card.ts` — AgentCard extension builder and parser (recognizes v2 and v1 URIs).
 - `src/errors.ts` — Error types, each with a `code` matching the spec's error codes.
