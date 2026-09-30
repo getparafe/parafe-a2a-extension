@@ -1,4 +1,5 @@
 import { SignJWT, decodeJwt, type KeyLike } from 'jose';
+import { dataPartValue } from './message.js';
 
 // ---------------------------------------------------------------------------
 // AP2 v0.2 receipts for Parafé-protected merchants (AP2 change request A3).
@@ -145,4 +146,108 @@ export async function signAp2Receipt(privateKey: KeyLike, input: Ap2ReceiptInput
     .setProtectedHeader({ alg: 'ES256', typ: 'JWT', ...(input.kid ? { kid: input.kid } : {}) })
     .sign(privateKey);
   return { receipt, kind: input.kind === 'checkout' ? 'ap2.checkout_receipt' : 'ap2.payment_receipt', reference, references, claims };
+}
+
+// ---------------------------------------------------------------------------
+// AP2 artifacts in A2A messages (A4). PROVISIONAL: AP2 v0.2 has no normative
+// AP2-over-A2A binding (it deleted its A2A extension spec); these follow the
+// AP2 samples (code/samples/python/src/common/constants.py), which put each
+// artifact in its own data part under a fixed key and declare the extension
+// `https://github.com/google-agentic-commerce/ap2/v1` on A2A 0.3. They may
+// change when AP2 (now at FIDO) publishes a binding. Parafé data stays in
+// message metadata, so the two never collide.
+// ---------------------------------------------------------------------------
+
+/** The extension URI the AP2 samples declare (provisional). */
+export const AP2_EXTENSION_URI = 'https://github.com/google-agentic-commerce/ap2/v1';
+/** Data-part keys the AP2 samples use. */
+export const AP2_CHECKOUT_MANDATE_KEY = 'ap2.mandates.CheckoutMandateSdJwt';
+export const AP2_PAYMENT_MANDATE_KEY = 'ap2.mandates.PaymentMandateSdJwt';
+export const AP2_PAYMENT_RECEIPT_KEY = 'ap2.PaymentReceipt';
+/** Not in the AP2 samples (they return checkout receipts over MCP); named after ap2.PaymentReceipt. */
+export const AP2_CHECKOUT_RECEIPT_KEY = 'ap2.CheckoutReceipt';
+
+const AP2_KEYS = {
+  checkoutMandate: AP2_CHECKOUT_MANDATE_KEY,
+  paymentMandate: AP2_PAYMENT_MANDATE_KEY,
+  checkoutReceipt: AP2_CHECKOUT_RECEIPT_KEY,
+  paymentReceipt: AP2_PAYMENT_RECEIPT_KEY,
+} as const;
+
+/** AP2 artifacts carried in an A2A message. Mandates are SD-JWT strings; receipts are JWTs (the AP2 samples also send unsigned receipt objects). */
+export interface Ap2MessageData {
+  checkoutMandate?: string;
+  paymentMandate?: string;
+  checkoutReceipt?: string | Record<string, unknown>;
+  paymentReceipt?: string | Record<string, unknown>;
+}
+
+/** The DataPart shape to write: @a2a-js/sdk objects, A2A 1.0 JSON, or A2A 0.3 JSON. */
+export type A2APartShape = 'a2a-js' | '1.0' | '0.3';
+
+interface MessageWithParts {
+  parts?: readonly unknown[] | null | undefined;
+  extensions?: readonly string[] | null | undefined;
+}
+
+function partShapeOf(parts: readonly unknown[]): A2APartShape {
+  for (const p of parts) {
+    if (p && typeof p === 'object') {
+      if ('content' in p) return 'a2a-js';
+      if ('kind' in p) return '0.3';
+    }
+  }
+  return '1.0';
+}
+
+function dataPart(shape: A2APartShape, data: Record<string, unknown>): unknown {
+  if (shape === 'a2a-js') return { content: { $case: 'data', value: data }, metadata: undefined, filename: '', mediaType: 'application/json' };
+  if (shape === '0.3') return { kind: 'data', data };
+  return { data, mediaType: 'application/json' };
+}
+
+/**
+ * Returns a copy of `message` with each AP2 artifact in its own data part (the
+ * AP2 samples' keys) and the AP2 extension URI in `extensions`. Parafé data in
+ * metadata is untouched. The part shape follows the message's existing parts
+ * (override with `shape`). PROVISIONAL (see AP2_EXTENSION_URI).
+ */
+export function withAp2<M extends MessageWithParts>(message: M, data: Ap2MessageData, options: { shape?: A2APartShape } = {}): M {
+  const parts = [...(message.parts ?? [])];
+  const shape = options.shape ?? partShapeOf(parts);
+  for (const [field, key] of Object.entries(AP2_KEYS) as [keyof Ap2MessageData, string][]) {
+    const value = data[field];
+    if (value === undefined) continue;
+    if (field.endsWith('Mandate') && typeof value !== 'string') throw new TypeError(`${field} must be the mandate as presented (an SD-JWT string)`);
+    parts.push(dataPart(shape, { [key]: value }));
+  }
+  const extensions = [...(message.extensions ?? [])];
+  if (!extensions.includes(AP2_EXTENSION_URI)) extensions.push(AP2_EXTENSION_URI);
+  return { ...message, parts, extensions };
+}
+
+/** The AP2 artifacts in an A2A message (data parts, any shape), or null when there are none. */
+export function readAp2(message: MessageWithParts): Ap2MessageData | null {
+  const out: Ap2MessageData = {};
+  for (const part of message.parts ?? []) {
+    const data = dataPartValue(part);
+    if (!data) continue;
+    for (const [field, key] of Object.entries(AP2_KEYS) as [keyof Ap2MessageData, string][]) {
+      if (!(key in data) || out[field] !== undefined) continue;
+      const value = data[key];
+      if (field.endsWith('Mandate') ? typeof value === 'string' : typeof value === 'string' || (!!value && typeof value === 'object' && !Array.isArray(value))) {
+        (out as Record<string, unknown>)[field] = value;
+      }
+    }
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * The AP2 agent-card extension entry, as the AP2 samples declare it. List it
+ * beside Parafé's (buildAgentCardExtension) in `capabilities.extensions`.
+ * PROVISIONAL (see AP2_EXTENSION_URI).
+ */
+export function buildAp2AgentCardExtension(options: { required?: boolean; description?: string } = {}): { uri: string; description: string; required: boolean } {
+  return { uri: AP2_EXTENSION_URI, description: options.description ?? 'Supports the Agent Payments Protocol.', required: options.required ?? false };
 }

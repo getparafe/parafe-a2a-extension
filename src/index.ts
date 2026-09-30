@@ -118,8 +118,18 @@ export {
   ap2MandateReferences,
   ap2ReceiptClaims,
   signAp2Receipt,
+  withAp2,
+  readAp2,
+  buildAp2AgentCardExtension,
+  AP2_EXTENSION_URI,
+  AP2_CHECKOUT_MANDATE_KEY,
+  AP2_PAYMENT_MANDATE_KEY,
+  AP2_CHECKOUT_RECEIPT_KEY,
+  AP2_PAYMENT_RECEIPT_KEY,
 } from './ap2.js';
 export type {
+  Ap2MessageData,
+  A2APartShape,
   Ap2References,
   Ap2ReferenceForm,
   Ap2ReceiptKind,

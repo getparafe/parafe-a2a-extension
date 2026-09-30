@@ -212,6 +212,22 @@ const { receipt, reference, references } = await receipts.ap2Receipt(sessionId, 
 
 AP2's spec and its SDK compute `reference` differently (the spec: the final SD-JWT's hash, like `sd_hash`; the AP2 SDK: SHA-256 of the closed mandate's JWT). The receipt uses the SDK's form by default (`referenceForm: 'sd_hash'` for the spec's) and `references` gives both. The broker matches either form against the mandates verified in the session and marks the index entry `reference_verified`. `signAp2Receipt` and `ap2MandateReferences` work without the signer; `kind: 'payment'` makes a Payment Receipt (`paymentId`, and on success `pspConfirmationId`, `networkConfirmationId`). The AP2 Python SDK's `ReceiptClient.verify_receipt` accepts these receipts.
 
+## AP2 mandates and receipts in A2A messages (provisional)
+
+AP2 v0.2 has no normative binding to A2A (it deleted its A2A extension spec); its samples put each artifact in its own data part under a fixed key and declare `https://github.com/google-agentic-commerce/ap2/v1`. `withAp2()` and `readAp2()` follow the samples, so AP2 data travels beside Parafé's without colliding (Parafé's stays in metadata). They may change when AP2 (now at FIDO) publishes a binding.
+
+```typescript
+// Shopping agent: the consent token (Parafé) and the checkout mandate (AP2) in one message
+const message = withAp2(withConsentToken(msg, token, sessionId, proof), { checkoutMandate });
+
+// Merchant agent
+const { checkoutMandate } = readAp2(ctx.userMessage) ?? {};
+const reply = withAp2(replyMessage, { checkoutReceipt: receipt });
+
+// Agent card: declare both
+capabilities: { extensions: [buildAgentCardExtension({ agentId, scopeRequirements, required: false }), buildAp2AgentCardExtension()] }
+```
+
 ## Verification
 
 `verifyMessageConsentToken(message, brokerKeys, { agentId, action?, scopeRequirements?, requireProof? })` does all of this. `verifyConsentTokenOffline(token, keys, options)` does it for a bare token (without the proof).

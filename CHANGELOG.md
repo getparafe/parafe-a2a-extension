@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.0 (unreleased)
+
+For the Parafé broker's AP2 v0.2 interop (AP2 change request Phase 3). Backward compatible.
+
+- **`delegated` modality** (broker B8). The broker's new level, an AP2 open-mandate chain it checked, ranks between `attested` and `verified` in the offline scope check and in agent-card scope requirements (a 2.2 reader refuses `delegated` tokens against any declared scope, and cards that require it). Consent claims gain `mandate_refs`.
+- **AP2 Checkout and Payment Receipts** (A3). `signAp2Receipt(privateKey, { kind, mandate, iss, orderId | paymentId …, error?, errorDescription? })` signs an AP2 v0.2 receipt (ES256, P-256 key), for rejections too; `reference` is the AP2 SDK's form by default (`referenceForm: 'sd_hash'` for the spec's) and `references` gives both (`ap2MandateReferences()`). The action receipt signer's `ap2Receipt(sessionId, input)` signs and files it in the session index. The AP2 Python SDK's `ReceiptClient.verify_receipt` accepts these receipts.
+- **AP2 artifacts in A2A messages** (A4, **provisional**). `withAp2(message, { checkoutMandate, paymentMandate, checkoutReceipt, paymentReceipt })` / `readAp2(message)` carry them in data parts under the AP2 samples' keys (`ap2.mandates.CheckoutMandateSdJwt`, `ap2.mandates.PaymentMandateSdJwt`, `ap2.PaymentReceipt`; `ap2.CheckoutReceipt` is ours), in the message's part shape (A2A 1.0, 0.3 or `@a2a-js/sdk`), and add `AP2_EXTENSION_URI` (`https://github.com/google-agentic-commerce/ap2/v1`, what the samples declare) to `extensions`. `buildAp2AgentCardExtension()` for the card. AP2 v0.2 has no normative A2A binding; this follows its samples and may change.
+
 ## 2.2.0 (2026-09-30)
 
 For the Parafé broker's action receipts (AP2 change request B6). Backward compatible: a 2.1 reader ignores `action_receipts` beside another member, but refuses a message whose only Parafé data is `action_receipts`, so move clients to 2.2 before agents send receipts alone.

@@ -8,14 +8,14 @@ TypeScript package that adds Parafe trust to the A2A (Agent-to-Agent) protocol, 
 - `src/message.ts` — Write Parafe data into A2A messages (`withParafe`) and read it back (`readParafe` + extractors). Data lives at `message.metadata[PARAFE_EXTENSION_URI]`, never in parts. Readers also accept v1 data parts in all three shapes (A2A 0.3 `kind`, A2A 1.0 wire, @a2a-js/sdk `content.$case`) until 2027-03-31.
 - `src/verification.ts` — Online and offline consent token verification. Broker keys by `kid` from the JWKS (`fetchBrokerKeys`; ES256, EdDSA for older tokens), runtime claim type guards, audience (`target_agent_id`), session match, scope-policy checks, presentation proofs (key-bound tokens: `createPresentationProof`, `verifyPresentationProof`, jti replay cache), HTTPS warning for non-localhost brokers.
 - `src/action-receipts.ts` — Action receipts (2.2): `createActionReceiptSigner` (sign with the agent key, file with the broker in the background, receipt refusals), `signActionReceipt`, `fileActionReceipt`, `actionErrorFor`, `jcs`. `verifyMessageConsentToken` takes the signer as `receipts`. Receipts travel as `action_receipts` (a list beside any member, or alone; `withActionReceipts`/`extractActionReceipts`).
-- `src/ap2.ts` — AP2 v0.2 interop (2.3): Checkout and Payment Receipts (`signAp2Receipt`, `ap2MandateReferences`: `reference` both ways; the signer's `ap2Receipt()` signs and files them).
+- `src/ap2.ts` — AP2 v0.2 interop (2.3): Checkout and Payment Receipts (`signAp2Receipt`, `ap2MandateReferences`: `reference` both ways; the signer's `ap2Receipt()` signs and files them), and AP2 artifacts in A2A messages (`withAp2`/`readAp2`, data parts under the AP2 samples' keys; provisional).
 - `src/headers.ts` — A2A activation headers (`A2A-Extensions`, and `X-A2A-Extensions` for A2A 0.3).
 - `src/agent-card.ts` — AgentCard extension builder and parser (recognizes v2 and v1 URIs).
 - `src/errors.ts` — Error types, each with a `code` matching the spec's error codes.
 - `src/types.ts` — Structural types (no dependency on any A2A SDK).
 - `src/constants.ts` — Extension URIs, header names, v1 data part keys.
 - `tests/unit/` — Unit tests.
-- `tests/interop/` — Runs the package against a real `@a2a-js/sdk` server and client on localhost (A2A 1.0 client, raw A2A 1.0 and 0.3 JSON-RPC, v1 senders). Part of `npm run test:unit`, so CI runs it. This is what catches A2A protocol drift.
+- `tests/interop/` — Runs the package against a real `@a2a-js/sdk` server and client on localhost (A2A 1.0 client, raw A2A 1.0 and 0.3 JSON-RPC, v1 senders; `ap2.test.ts`: a Parafé consent token and an AP2 mandate in one message). Part of `npm run test:unit`, so CI runs it. This is what catches A2A protocol drift.
 - `tests/integration/` — Integration tests (`broker.test.ts`, runs against live staging broker).
 
 ## Running

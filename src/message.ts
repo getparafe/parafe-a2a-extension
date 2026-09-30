@@ -343,7 +343,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
 const V1_KEYS = [PARAFE_V1_HANDSHAKE_CHALLENGE, PARAFE_V1_HANDSHAKE_COMPLETE, PARAFE_V1_CONSENT_TOKEN];
 
 /** The `data` object of a data part in any of its three shapes, or null. */
-function dataPartValue(part: unknown): Record<string, unknown> | null {
+/** The data of a DataPart in any of its shapes, or null. @internal */
+export function dataPartValue(part: unknown): Record<string, unknown> | null {
   if (!isObject(part)) return null;
   // @a2a-js/sdk: { content: { $case: 'data', value } }
   const content = part['content'];
