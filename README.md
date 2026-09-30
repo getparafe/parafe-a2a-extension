@@ -198,6 +198,20 @@ The SDK picks the right activation header for the A2A version it negotiated. Sen
 
 ---
 
+## AP2 receipts (merchant side)
+
+If your agent is a merchant and a shopping agent presents an [AP2](https://github.com/google-agentic-commerce/AP2) v0.2 Checkout Mandate, AP2 says you MUST answer with a Checkout Receipt, for a rejection too. After verifying the mandate (the broker's `POST /ap2/mandates/verify` via `@getparafe/sdk`'s `verifyMandate()`, or offline with `@getparafe/verify`'s `verifyAp2Mandate`), sign the receipt with your agent's P-256 key and file it in the session's index:
+
+```typescript
+const receipts = createActionReceiptSigner({ agentId, privateKey, credential });
+const { receipt, reference, references } = await receipts.ap2Receipt(sessionId, verified.valid
+  ? { kind: 'checkout', mandate, orderId: order.id }
+  : { kind: 'checkout', mandate, error: verified.error, errorDescription: verified.message });
+// return `receipt` to the shopping agent; it is filed in the background (receipts.flush() before close)
+```
+
+AP2's spec and its SDK compute `reference` differently (the spec: the final SD-JWT's hash, like `sd_hash`; the AP2 SDK: SHA-256 of the closed mandate's JWT). The receipt uses the SDK's form by default (`referenceForm: 'sd_hash'` for the spec's) and `references` gives both. The broker matches either form against the mandates verified in the session and marks the index entry `reference_verified`. `signAp2Receipt` and `ap2MandateReferences` work without the signer; `kind: 'payment'` makes a Payment Receipt (`paymentId`, and on success `pspConfirmationId`, `networkConfirmationId`). The AP2 Python SDK's `ReceiptClient.verify_receipt` accepts these receipts.
+
 ## Verification
 
 `verifyMessageConsentToken(message, brokerKeys, { agentId, action?, scopeRequirements?, requireProof? })` does all of this. `verifyConsentTokenOffline(token, keys, options)` does it for a bare token (without the proof).

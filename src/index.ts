@@ -112,3 +112,17 @@ export type {
   ActionReceiptSigner,
   ActionReceiptSignerOptions,
 } from './action-receipts.js';
+
+// AP2 v0.2 interop (2.3, AP2 change request A3/A4)
+export {
+  ap2MandateReferences,
+  ap2ReceiptClaims,
+  signAp2Receipt,
+} from './ap2.js';
+export type {
+  Ap2References,
+  Ap2ReferenceForm,
+  Ap2ReceiptKind,
+  Ap2ReceiptInput,
+  Ap2Receipt,
+} from './ap2.js';

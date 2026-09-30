@@ -1,5 +1,6 @@
 import { SignJWT, decodeJwt, type KeyLike } from 'jose';
 import { DEFAULT_BROKER_URL } from './constants.js';
+import { signAp2Receipt, type Ap2Receipt, type Ap2ReceiptInput } from './ap2.js';
 import {
   ExpiredConsentTokenError,
   InvalidProofError,
@@ -98,6 +99,12 @@ export interface ActionReceiptSigner {
    * verifyMessageConsentToken. Null when there was no consent token to bind it to.
    */
   refuse(consent: { token: string; session_id: string } | null, action: string, err: unknown): Promise<RecordedActionReceipt | null>;
+  /**
+   * AP2 (A3): sign an AP2 Checkout or Payment Receipt with your agent key (it
+   * must be P-256) and file it in the session's index in the background.
+   * `iss` defaults to your agent DID, `kid` to its key.
+   */
+  ap2Receipt(sessionId: string, input: Omit<Ap2ReceiptInput, 'iss' | 'kid'> & { iss?: string; kid?: string }): Promise<Ap2Receipt & { filed: Promise<ActionReceiptAck | null> }>;
   /** Wait for every background filing. Call before closing the session. */
   flush(): Promise<void>;
 }
@@ -246,16 +253,20 @@ export function createActionReceiptSigner(options: ActionReceiptSignerOptions): 
   const file = (sessionId: string, receipt: string, kind?: ActionReceiptKind) =>
     fileActionReceipt(receipt, { sessionId, credential: options.credential, privateKey: options.privateKey, brokerUrl, ...(kind ? { kind } : {}) });
 
-  const record = async (input: ActionReceiptInput): Promise<RecordedActionReceipt> => {
-    const receipt = await signActionReceipt(options.privateKey, await did(), input);
-    if (!fileByDefault) return { receipt, filed: Promise.resolve(null) };
-    const filed: Promise<ActionReceiptAck | null> = file(input.sessionId, receipt).catch((err) => {
+  const inBackground = (sessionId: string, receipt: string, kind?: ActionReceiptKind): Promise<ActionReceiptAck | null> => {
+    const filed: Promise<ActionReceiptAck | null> = file(sessionId, receipt, kind).catch((err) => {
       onFileError(err, receipt);
       return null;
     });
     pending.add(filed);
     void filed.finally(() => pending.delete(filed));
-    return { receipt, filed };
+    return filed;
+  };
+
+  const record = async (input: ActionReceiptInput): Promise<RecordedActionReceipt> => {
+    const receipt = await signActionReceipt(options.privateKey, await did(), input);
+    if (!fileByDefault) return { receipt, filed: Promise.resolve(null) };
+    return { receipt, filed: inBackground(input.sessionId, receipt) };
   };
 
   return {
@@ -282,6 +293,12 @@ export function createActionReceiptSigner(options: ActionReceiptSignerOptions): 
         error,
         errorDescription: err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500),
       });
+    },
+    async ap2Receipt(sessionId, input) {
+      const agentDid = await did();
+      const signed = await signAp2Receipt(options.privateKey, { ...input, iss: input.iss ?? agentDid, kid: input.kid ?? `${agentDid}#keys-1` });
+      const filed = fileByDefault ? inBackground(sessionId, signed.receipt, signed.kind) : Promise.resolve(null);
+      return { ...signed, filed };
     },
     async flush() {
       await Promise.allSettled([...pending]);
