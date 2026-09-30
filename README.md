@@ -57,6 +57,9 @@ export const SCOPES = {
   'check-menu': { permissions: ['read_menu'], minimum_authorization_modality: 'autonomous' },
   'order-donuts': { permissions: ['read_menu', 'create_order'], minimum_authorization_modality: 'attested' },
 } as const;
+// Modalities, weakest to strongest: autonomous < attested < delegated < verified.
+// 'delegated' and 'verified' mean the broker checked a user-signed AP2 mandate
+// (claims.mandate_refs lists it); set ap2_trusted_issuers in the broker scope policy.
 
 const card = {
   name: 'SoHo Donuts Shop Agent',

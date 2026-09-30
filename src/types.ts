@@ -124,8 +124,8 @@ export type ParafeMessageData =
 export interface ScopeRequirement {
   /** Permitted actions within this scope. */
   permissions: string[];
-  /** Minimum authorization modality required. */
-  minimum_authorization_modality: 'autonomous' | 'attested' | 'verified';
+  /** Minimum authorization modality required (weakest to strongest; delegated and verified mean a broker-checked AP2 mandate). */
+  minimum_authorization_modality: 'autonomous' | 'attested' | 'delegated' | 'verified';
   /**
    * Require the initiator to have proved it holds its key ('pop') when the
    * token was issued, not just shown its credential. The broker enforces this
@@ -224,7 +224,12 @@ export interface ParafeConsentClaims {
   /** Always "consent" for consent tokens. */
   token_type: 'consent';
   /** Authorization modality. */
-  authorization_modality: 'autonomous' | 'attested' | 'verified';
+  authorization_modality: 'autonomous' | 'attested' | 'delegated' | 'verified';
+  /**
+   * Broker B8: the AP2 mandates behind 'delegated' / 'verified', by hash both
+   * ways (`closed_jwt`: SHA-256 of the closed mandate JWT; `sd_hash`: the spec's).
+   */
+  mandate_refs?: { family: 'checkout' | 'payment'; closed_jwt: string; sd_hash: string }[];
   /** Agent ID of the handshake initiator. */
   initiator_agent_id: string | null;
   /** Agent ID of the handshake target — the agent this token was issued for. */

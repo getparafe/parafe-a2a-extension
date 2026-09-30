@@ -102,6 +102,13 @@ describe('parseAgentCardExtension', () => {
     expect(result?.params.agent_id).toBe('prf_agent_donuts01');
   });
 
+  it("B8: accepts a scope that requires 'delegated'; still refuses an unknown modality", () => {
+    const withDelegated = { ...params, scope_requirements: { pay: { permissions: ['pay'], minimum_authorization_modality: 'delegated' } } };
+    expect(parseAgentCardExtension([{ uri: PARAFE_EXTENSION_URI, required: true, params: withDelegated }])?.params.scope_requirements.pay?.minimum_authorization_modality).toBe('delegated');
+    const bogus = { ...params, scope_requirements: { pay: { permissions: ['pay'], minimum_authorization_modality: 'supervised' } } };
+    expect(parseAgentCardExtension([{ uri: PARAFE_EXTENSION_URI, required: true, params: bogus }])).toBeNull();
+  });
+
   it('prefers the v2 entry when a card lists both', () => {
     const result = parseAgentCardExtension([
       { uri: PARAFE_EXTENSION_URI_V1, required: true, params: { ...params, agent_id: 'prf_agent_v1' } },

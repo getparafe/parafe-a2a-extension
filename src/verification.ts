@@ -594,7 +594,8 @@ function assertPermission(
   }
 }
 
-const MODALITY_RANK = { autonomous: 0, attested: 1, verified: 2 } as const;
+// Broker B8: 'delegated' (an AP2 open-mandate chain the broker checked) sits between attested and verified.
+const MODALITY_RANK: Record<string, number> = { autonomous: 0, attested: 1, delegated: 2, verified: 3 };
 
 function assertWithinPolicy(
   claims: ParafeConsentClaims,
@@ -614,7 +615,7 @@ function assertWithinPolicy(
   }
   const have = MODALITY_RANK[claims.authorization_modality];
   const need = MODALITY_RANK[scope.minimum_authorization_modality];
-  if (have === undefined || have < need) {
+  if (have === undefined || need === undefined || have < need) {
     throw new ScopeViolationError(claims.scope, claims.permissions,
       `Scope "${claims.scope}" requires "${scope.minimum_authorization_modality}" authorization, token has "${String(claims.authorization_modality)}".`);
   }

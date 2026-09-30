@@ -195,6 +195,17 @@ describe('verifyConsentTokenOffline checks', () => {
     ).resolves.toBeTruthy();
   });
 
+  it("B8: 'delegated' meets an attested or delegated scope, not a verified one", async () => {
+    const { token, pemPublicKey } = await createTestToken({ authorization_modality: 'delegated' });
+    for (const [min, ok] of [['attested', true], ['delegated', true], ['verified', false]] as const) {
+      const p = verifyConsentTokenOffline(token, pemPublicKey, {
+        scopeRequirements: { 'test-scope': { ...scopeRequirements['test-scope'], minimum_authorization_modality: min } },
+      });
+      if (ok) await expect(p).resolves.toBeTruthy();
+      else await expect(p).rejects.toThrow(ScopeViolationError);
+    }
+  });
+
   it('does not treat inherited object keys as declared scopes', async () => {
     const { token, pemPublicKey } = await createTestToken({ scope: 'toString' });
     await expect(
