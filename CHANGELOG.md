@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.0 (unreleased)
+
+For the Parafé broker's 2026-09-30 formats (AP2 change request Phase 1). Backward compatible.
+
+- **Broker keys by `kid`.** `fetchBrokerKeys()` returns the broker's JWKS; `verifyConsentTokenOffline` and `verifyMessageConsentToken` take it and verify ES256 tokens by `kid` (EdDSA tokens still verify). A PEM key from `fetchBrokerPublicKey()` still works for tokens issued before 2026-09-30, and says what to do when given an ES256 token. On an older broker, `fetchBrokerKeys()` returns its single Ed25519 key.
+- **Consent token v2.** Claims `exclusions` (older tokens: `excluded`; the verifier sets both), `sub`, `aud` (target DID), `cnf.jkt`, `jti`, `initiator_proof`, `initiator_proof_at`. `ScopeRequirement.minimum_initiator_proof` is enforced when declared.
+- **Presentation proofs (key binding).** `createPresentationProof(token, privateKey, { messageId })` for initiators; `withConsentToken(message, token, sessionId, proof)` carries it (`consent.proof`). `verifyMessageConsentToken` checks a proof whenever one is sent (key in `cnf.jkt`, fetched from the initiator's DID document unless `initiatorKey` is given; token hash; audience; message ID; 5-minute freshness; single use) and refuses a missing proof with `requireProof: true` (default in 3.0). New `InvalidProofError` (code `INVALID_PROOF`). `verifyConsentTokenOnline` passes `proof` to the broker and reports `keyBound`/`proofVerified`.
+- **`session_closed` message.** `withSessionClosed()` / `extractSessionClosed()` carry the session receipt (a JWS) to the participant that didn't close.
+
 ## 2.0.0 (2026-09-27)
 
 Follows A2A protocol 1.0. Breaking. See "Migrating from 1.x" in the README.

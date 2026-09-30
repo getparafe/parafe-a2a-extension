@@ -8,6 +8,7 @@ import { MalformedParafeDataError, isParafeError } from './errors.js';
 import type {
   A2AMessageLike,
   ConsentTokenPayload,
+  SessionClosedPayload,
   HandshakeChallengePayload,
   HandshakeCompletePayload,
   ParafeErrorPayload,
@@ -42,13 +43,22 @@ export function withParafe<M extends A2AMessageLike>(message: M, data: ParafeMes
   };
 }
 
-/** Shorthand for `withParafe(message, { consent: { token, session_id } })`. */
+/**
+ * Shorthand for `withParafe(message, { consent: { token, session_id, proof } })`.
+ * Pass the presentation proof from createPresentationProof() (2.1).
+ */
 export function withConsentToken<M extends A2AMessageLike>(
   message: M,
   token: string,
-  sessionId: string
+  sessionId: string,
+  proof?: string
 ): M {
-  return withParafe(message, { consent: { token, session_id: sessionId } });
+  return withParafe(message, { consent: { token, session_id: sessionId, ...(proof ? { proof } : {}) } });
+}
+
+/** Shorthand for `withParafe(message, { session_closed: { session_id, receipt } })` (2.1). */
+export function withSessionClosed<M extends A2AMessageLike>(message: M, sessionId: string, receipt: string): M {
+  return withParafe(message, { session_closed: { session_id: sessionId, receipt } });
 }
 
 /**
@@ -145,6 +155,15 @@ export function extractParafeError(
   return data && 'error' in data ? data.error : null;
 }
 
+/** The `session_closed` (session ID + receipt JWS) in a message, or null. */
+export function extractSessionClosed(
+  message: A2AMessageLike,
+  options?: ReadParafeOptions
+): SessionClosedPayload | null {
+  const data = readParafe(message, options);
+  return data && 'session_closed' in data ? data.session_closed : null;
+}
+
 /** True if the message carries any Parafe data (without validating it). */
 export function hasParafeData(message: A2AMessageLike, options: ReadParafeOptions = {}): boolean {
   const fromMetadata = message.metadata?.[PARAFE_EXTENSION_URI];
@@ -160,7 +179,7 @@ export function hasParafeData(message: A2AMessageLike, options: ReadParafeOption
 // Validation
 // ---------------------------------------------------------------------------
 
-const MEMBERS = ['handshake_challenge', 'handshake_complete', 'consent', 'error'] as const;
+const MEMBERS = ['handshake_challenge', 'handshake_complete', 'consent', 'session_closed', 'error'] as const;
 
 function validateParafeData(raw: unknown): ParafeMessageData {
   if (!isObject(raw)) {
@@ -184,6 +203,8 @@ function validateParafeData(raw: unknown): ParafeMessageData {
       return { handshake_complete: validateComplete(value, member) };
     case 'consent':
       return { consent: validateConsent(value, member) };
+    case 'session_closed':
+      return { session_closed: validateSessionClosed(value) };
     case 'error':
       return { error: validateError(value) };
   }
@@ -223,7 +244,19 @@ function validateComplete(value: unknown, label: string): HandshakeCompletePaylo
 function validateConsent(value: unknown, label: string): ConsentTokenPayload {
   const payload = requireObject(value, label);
   requireStrings(payload, label, ['token', 'session_id']);
+  if (payload['proof'] !== undefined && typeof payload['proof'] !== 'string') {
+    throw new MalformedParafeDataError(label, 'proof must be a string');
+  }
   return payload as unknown as ConsentTokenPayload;
+}
+
+function validateSessionClosed(value: unknown): SessionClosedPayload {
+  const payload = requireObject(value, 'session_closed');
+  requireStrings(payload, 'session_closed', ['session_id', 'receipt']);
+  if ((payload['receipt'] as string).split('.').length !== 3) {
+    throw new MalformedParafeDataError('session_closed', 'receipt must be the receipt JWS');
+  }
+  return payload as unknown as SessionClosedPayload;
 }
 
 function validateError(value: unknown): ParafeErrorPayload {

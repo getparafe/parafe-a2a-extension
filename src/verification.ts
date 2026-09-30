@@ -1,4 +1,15 @@
-import { importSPKI, jwtVerify, decodeJwt } from 'jose';
+import {
+  importSPKI,
+  importJWK,
+  jwtVerify,
+  decodeJwt,
+  decodeProtectedHeader,
+  createLocalJWKSet,
+  calculateJwkThumbprint,
+  SignJWT,
+  type JWK,
+  type KeyLike,
+} from 'jose';
 import { DEFAULT_BROKER_URL } from './constants.js';
 import { extractConsentToken, type ReadParafeOptions } from './message.js';
 import {
@@ -7,9 +18,12 @@ import {
   ExpiredConsentTokenError,
   ScopeViolationError,
   WrongAudienceError,
+  InvalidProofError,
 } from './errors.js';
 import type {
   A2AMessageLike,
+  BrokerKeys,
+  JsonWebKeyLike,
   ParafeConsentClaims,
   ScopeRequirement,
   VerifyConsentOptions,
@@ -18,15 +32,17 @@ import type {
 } from './types.js';
 
 /**
- * Verifies a Parafe consent token offline using the broker's Ed25519 public key.
- * No network call required — verification uses only the public key and the token.
+ * Verifies a Parafe consent token offline against the broker's keys.
+ * No network call required — verification uses only the keys and the token.
  *
- * This is the recommended verification path for most A2A agents. Fetch the broker's
- * public key once at startup (or cache it) via fetchBrokerPublicKey(), then call
- * this function on every incoming request.
+ * This is the recommended verification path for most A2A agents. Fetch the
+ * broker's keys once at startup (or cache them) via fetchBrokerKeys(), then call
+ * this function on every incoming request. Since 2026-09-30 the broker signs
+ * ES256 and names its key (`kid`); a PEM Ed25519 key from fetchBrokerPublicKey()
+ * still verifies tokens issued before that.
  *
  * Validates:
- * - Ed25519 signature is valid
+ * - The broker's signature is valid (ES256 by kid, or EdDSA)
  * - Token has not expired
  * - Issuer is "parafe-trust-broker"
  * - Token type is "consent"
@@ -39,18 +55,25 @@ import type {
  */
 export async function verifyConsentTokenOffline(
   token: string,
-  brokerPublicKey: string,
+  brokerKeys: BrokerKeys | string,
   options: VerifyConsentOptions | string = {}
 ): Promise<ParafeConsentClaims> {
   const checks: VerifyConsentOptions = typeof options === 'string' ? { action: options } : options;
   let claims: ParafeConsentClaims;
 
   try {
-    const publicKey = await importSPKI(brokerPublicKey, 'EdDSA');
-    const { payload } = await jwtVerify(token, publicKey, {
-      algorithms: ['EdDSA'],
-      issuer: 'parafe-trust-broker',
-    });
+    let payload: Record<string, unknown>;
+    if (typeof brokerKeys === 'string') {
+      // Legacy: the broker's Ed25519 key as PEM. Tokens since 2026-09-30 are ES256.
+      if (safeHeaderAlg(token) === 'ES256') {
+        throw new Error('this token is ES256 (broker 2026-09-30+); pass fetchBrokerKeys() instead of a PEM public key');
+      }
+      const publicKey = await importSPKI(brokerKeys, 'EdDSA');
+      ({ payload } = await jwtVerify(token, publicKey, { algorithms: ['EdDSA'], issuer: 'parafe-trust-broker' }));
+    } else {
+      const keySet = createLocalJWKSet(brokerKeys as unknown as { keys: JWK[] });
+      ({ payload } = await jwtVerify(token, keySet, { algorithms: ['ES256', 'EdDSA'], issuer: 'parafe-trust-broker' }));
+    }
     claims = payload as unknown as ParafeConsentClaims;
   } catch (err) {
     if (err instanceof Error) {
@@ -85,11 +108,15 @@ export async function verifyConsentTokenOffline(
     );
   }
 
-  if (claims.excluded !== undefined && !Array.isArray(claims.excluded)) {
+  // Consent token v2 names the claim `exclusions`; older tokens `excluded`. Set both.
+  const exclusions: unknown = claims.exclusions ?? claims.excluded ?? [];
+  if (!Array.isArray(exclusions)) {
     throw new InvalidConsentTokenError(
-      `Expected "excluded" claim to be an array, got ${typeof claims.excluded}`
+      `Expected "exclusions" claim to be an array, got ${typeof exclusions}`
     );
   }
+  claims.exclusions = exclusions as string[];
+  claims.excluded = (claims.excluded ?? exclusions) as string[];
 
   if (checks.agentId !== undefined && claims.target_agent_id !== checks.agentId) {
     throw new WrongAudienceError(checks.agentId, claims.target_agent_id ?? null);
@@ -103,10 +130,18 @@ export async function verifyConsentTokenOffline(
     assertWithinPolicy(claims, checks.scopeRequirements);
   }
   if (checks.action !== undefined) {
-    assertPermission(checks.action, claims.permissions, claims.excluded ?? []);
+    assertPermission(checks.action, claims.permissions, claims.exclusions);
   }
 
   return claims;
+}
+
+function safeHeaderAlg(token: string): string | undefined {
+  try {
+    return decodeProtectedHeader(token).alg;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -159,6 +194,7 @@ export async function verifyConsentTokenOnline(
         consent_token: token,
         action: options.action,
         session_id: sessionId,
+        ...(options.proof ? { proof: options.proof } : {}),
       }),
     });
   } catch (err) {
@@ -171,10 +207,11 @@ export async function verifyConsentTokenOnline(
 
   if (!response.ok) {
     const reason = typeof body['reason'] === 'string' ? body['reason'] : response.statusText;
+    if (body['error'] === 'proof_invalid') throw new InvalidProofError(reason);
     if (reason.toLowerCase().includes('expired')) {
       throw new ExpiredConsentTokenError(new Date());
     }
-    throw new InvalidConsentTokenError(reason);
+    throw new InvalidConsentTokenError(body['error'] === 'agent_revoked' ? `agent revoked: ${reason}` : reason);
   }
 
   if (body['valid'] === true && body['permitted'] === false) {
@@ -207,6 +244,8 @@ export async function verifyConsentTokenOnline(
     action: body['action'],
     sessionId: typeof body['session_id'] === 'string' ? body['session_id'] : sessionId,
     expiresAt: typeof body['expires_at'] === 'string' ? body['expires_at'] : undefined,
+    keyBound: body['key_bound'] === true,
+    proofVerified: body['proof_verified'] === true,
   };
 }
 
@@ -217,11 +256,45 @@ export interface ConsentVerifyResult {
   action: string;
   sessionId: string;
   expiresAt?: string | undefined;
+  /** The token is bound to the initiator's key (cnf.jkt). */
+  keyBound?: boolean;
+  /** A presentation proof was sent and the broker checked it. */
+  proofVerified?: boolean;
 }
 
 /**
- * Fetches the Parafe broker's Ed25519 public key for use with verifyConsentTokenOffline().
- * Call this once at agent startup and cache the result — the key changes infrequently.
+ * Fetches the broker's signing keys (its JWKS, at /.well-known/jwks.json) for
+ * verifyConsentTokenOffline() and verifyMessageConsentToken(). Call once at
+ * startup and cache. On a broker from before 2026-09-30 (no JWKS) it returns
+ * that broker's single Ed25519 key.
+ */
+export async function fetchBrokerKeys(brokerUrl: string = DEFAULT_BROKER_URL): Promise<BrokerKeys> {
+  let response: Response;
+  try {
+    response = await fetch(`${brokerUrl}/.well-known/jwks.json`);
+  } catch (err) {
+    throw new Error(`Could not fetch Parafe broker keys from ${brokerUrl}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (response.status === 404) {
+    const pem = await fetchBrokerPublicKey(brokerUrl);
+    const spki = pem.replace(/-----[A-Z ]+-----/g, '').replace(/\s/g, '');
+    const raw = Uint8Array.from(atob(spki), (c) => c.charCodeAt(0)).slice(-32);
+    const x = btoa(String.fromCharCode(...raw)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return { keys: [{ kty: 'OKP', crv: 'Ed25519', x, kid: 'legacy-ed25519', alg: 'EdDSA' }] };
+  }
+  if (!response.ok) {
+    throw new Error(`Parafe broker returned ${response.status} when fetching its keys from ${brokerUrl}`);
+  }
+  const body = (await response.json()) as BrokerKeys;
+  if (!body || !Array.isArray(body.keys)) {
+    throw new Error('Unexpected response shape from Parafe broker /.well-known/jwks.json — expected "keys"');
+  }
+  return body;
+}
+
+/**
+ * Fetches the Parafe broker's legacy Ed25519 public key (PEM). It verifies tokens
+ * issued before 2026-09-30. For current tokens use fetchBrokerKeys().
  *
  * The broker returns the key as base64-encoded SPKI DER. This function converts it
  * to PEM format, which is what jose's importSPKI() expects.
@@ -272,22 +345,146 @@ export async function fetchBrokerPublicKey(
  * });
  */
 export async function verifyMessageConsentToken(
-  message: A2AMessageLike,
-  brokerPublicKey: string,
+  message: A2AMessageLike & { messageId?: unknown },
+  brokerKeys: BrokerKeys | string,
   options: VerifyMessageOptions & ReadParafeOptions
-): Promise<{ claims: ParafeConsentClaims; sessionId: string }> {
-  const { acceptV1, ...checks } = options;
+): Promise<{ claims: ParafeConsentClaims; sessionId: string; proofVerified: boolean }> {
+  const { acceptV1, requireProof, initiatorKey, brokerUrl, ...checks } = options;
   const consent = extractConsentToken(message, acceptV1 === undefined ? {} : { acceptV1 });
   if (consent === null) {
     throw new MissingParafeExtensionError('No Parafe consent token found in the message.');
   }
 
-  const claims = await verifyConsentTokenOffline(consent.token, brokerPublicKey, {
+  const claims = await verifyConsentTokenOffline(consent.token, brokerKeys, {
     ...checks,
     sessionId: consent.session_id,
   });
 
-  return { claims, sessionId: consent.session_id };
+  // Key binding (2.1): the token must be presented by the key it names.
+  let proofVerified = false;
+  if (consent.proof !== undefined) {
+    await verifyPresentationProof(consent.proof, consent.token, claims, {
+      ...(initiatorKey ? { initiatorKey } : {}),
+      ...(brokerUrl ? { brokerUrl } : {}),
+      ...(typeof message.messageId === 'string' ? { messageId: message.messageId } : {}),
+    });
+    proofVerified = true;
+  } else if (requireProof) {
+    throw new InvalidProofError('this agent requires a presentation proof with the consent token');
+  }
+
+  return { claims, sessionId: consent.session_id, proofVerified };
+}
+
+// ---------------------------------------------------------------------------
+// Presentation proofs (key-bound consent tokens, 2.1)
+// ---------------------------------------------------------------------------
+
+const POP_TYP = 'parafe-pop+jwt';
+const PROOF_MAX_AGE_SECONDS = 5 * 60;
+
+/** Proof jtis seen in the last few minutes (per process): a proof is single-use. */
+const seenProofs = new Map<string, number>();
+function claimProofJti(jti: string): boolean {
+  const now = Date.now();
+  if (seenProofs.size > 10_000) for (const [k, exp] of seenProofs) if (exp <= now) seenProofs.delete(k);
+  const exp = seenProofs.get(jti);
+  if (exp !== undefined && exp > now) return false;
+  seenProofs.set(jti, now + (PROOF_MAX_AGE_SECONDS + 60) * 1000);
+  return true;
+}
+
+/** Initiator keys fetched from DID documents, by agent ID (10 minutes). */
+const didKeyCache = new Map<string, { jwk: JsonWebKeyLike; at: number }>();
+async function initiatorJwk(agentId: string, brokerUrl: string): Promise<JsonWebKeyLike> {
+  const cached = didKeyCache.get(agentId);
+  if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.jwk;
+  let res: Response;
+  try {
+    res = await fetch(`${brokerUrl}/agents/${encodeURIComponent(agentId)}/did.json`);
+  } catch (err) {
+    throw new InvalidProofError(`could not fetch the initiator's DID document: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!res.ok) throw new InvalidProofError(`the initiator's DID document is unavailable (${res.status}); is the agent revoked?`);
+  const doc = (await res.json()) as { verificationMethod?: Array<{ publicKeyJwk?: JsonWebKeyLike }> };
+  const jwk = doc.verificationMethod?.[0]?.publicKeyJwk;
+  if (!jwk) throw new InvalidProofError("the initiator's DID document has no public key");
+  didKeyCache.set(agentId, { jwk, at: Date.now() });
+  return jwk;
+}
+
+function b64url(bytes: ArrayBuffer): string {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/**
+ * Checks a presentation proof against a verified consent token: signed by the
+ * key in `cnf.jkt`, for this token (`ath`), for the token's audience (`aud`),
+ * fresh (5 minutes), not seen before, and for this message (`mid`, when given).
+ * Throws InvalidProofError.
+ */
+export async function verifyPresentationProof(
+  proof: string,
+  token: string,
+  claims: ParafeConsentClaims,
+  options: { initiatorKey?: JsonWebKeyLike; brokerUrl?: string; messageId?: string } = {}
+): Promise<void> {
+  const jkt = claims.cnf?.jkt;
+  if (!jkt) throw new InvalidProofError('the consent token is not key-bound (issued before 2026-09-30)');
+  const initiator = claims.sub ?? claims.initiator_agent_id;
+  if (!initiator) throw new InvalidProofError('the consent token names no initiator');
+  const jwk = options.initiatorKey ?? (await initiatorJwk(initiator, options.brokerUrl ?? DEFAULT_BROKER_URL));
+  if ((await calculateJwkThumbprint(jwk as JWK)) !== jkt) {
+    throw new InvalidProofError("the initiator's key is not the one the token is bound to");
+  }
+  const alg = jwk.kty === 'EC' ? 'ES256' : 'EdDSA';
+  let payload: Record<string, unknown>;
+  try {
+    ({ payload } = await jwtVerify(proof, await importJWK(jwk as JWK, alg), {
+      typ: POP_TYP,
+      algorithms: [alg],
+      maxTokenAge: PROOF_MAX_AGE_SECONDS,
+      clockTolerance: 60,
+    }));
+  } catch (err) {
+    throw new InvalidProofError(err instanceof Error ? err.message : String(err));
+  }
+  const ath = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
+  if (payload['ath'] !== ath) throw new InvalidProofError('the proof is for a different token');
+  if (payload['aud'] !== claims.aud) throw new InvalidProofError('the proof is for a different audience');
+  if (options.messageId !== undefined && payload['mid'] !== undefined && payload['mid'] !== options.messageId) {
+    throw new InvalidProofError('the proof is for a different message');
+  }
+  if (typeof payload['jti'] !== 'string' || (payload['jti'] as string).length < 16) {
+    throw new InvalidProofError('the proof needs a random jti');
+  }
+  if (!claimProofJti(`${initiator}:${payload['jti'] as string}`)) {
+    throw new InvalidProofError('the proof was already used');
+  }
+}
+
+/**
+ * Initiator side: the presentation proof to send with a consent token
+ * (`withConsentToken(message, token, sessionId, proof)`). Signed with the
+ * agent's private key (a Node KeyObject or WebCrypto CryptoKey; Ed25519 or
+ * P-256), bound to this token, its audience and optionally the A2A message ID.
+ */
+export async function createPresentationProof(
+  token: string,
+  privateKey: KeyLike,
+  options: { messageId?: string } = {}
+): Promise<string> {
+  const aud = decodeJwt(token).aud;
+  if (typeof aud !== 'string') {
+    throw new InvalidConsentTokenError('this token has no audience (issued before 2026-09-30); no proof applies');
+  }
+  const k = privateKey as unknown as { asymmetricKeyType?: string; algorithm?: { name?: string } };
+  const alg = k.asymmetricKeyType === 'ec' || k.algorithm?.name === 'ECDSA' ? 'ES256' : 'EdDSA';
+  const ath = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
+  return new SignJWT({ ath, aud, jti: crypto.randomUUID(), ...(options.messageId ? { mid: options.messageId } : {}) })
+    .setProtectedHeader({ alg, typ: POP_TYP })
+    .setIssuedAt()
+    .sign(privateKey);
 }
 
 function derBase64ToPem(base64: string): string {
@@ -337,5 +534,9 @@ function assertWithinPolicy(
   if (have === undefined || have < need) {
     throw new ScopeViolationError(claims.scope, claims.permissions,
       `Scope "${claims.scope}" requires "${scope.minimum_authorization_modality}" authorization, token has "${String(claims.authorization_modality)}".`);
+  }
+  if (scope.minimum_initiator_proof === 'pop' && claims.initiator_proof !== 'pop') {
+    throw new ScopeViolationError(claims.scope, claims.permissions,
+      `Scope "${claims.scope}" requires the initiator to have proved it holds its key, token says "${String(claims.initiator_proof ?? 'unknown')}".`);
   }
 }

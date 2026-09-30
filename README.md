@@ -80,7 +80,7 @@ const card = {
 import { ParafeClient } from '@getparafe/sdk';
 import {
   PARAFE_EXTENSION_URI,
-  fetchBrokerPublicKey,
+  fetchBrokerKeys,
   readParafe,
   verifyMessageConsentToken,
   withParafe,
@@ -88,7 +88,7 @@ import {
 } from '@getparafe/a2a-extension';
 
 const parafe = new ParafeClient({ brokerUrl: 'https://api.parafe.ai', apiKey: process.env.PARAFE_API_KEY });
-const brokerPublicKey = await fetchBrokerPublicKey(); // once, at startup
+const brokerKeys = await fetchBrokerKeys(); // the broker's JWKS, once at startup
 
 class ShopExecutor implements AgentExecutor {
   async execute(ctx: RequestContext, bus: ExecutionEventBus) {
@@ -104,10 +104,11 @@ class ShopExecutor implements AgentExecutor {
         });
       } else {
         // Before any action inside a Parafé scope:
-        const { claims } = await verifyMessageConsentToken(ctx.userMessage, brokerPublicKey, {
+        const { claims } = await verifyMessageConsentToken(ctx.userMessage, brokerKeys, {
           agentId: 'prf_agent_donuts01', // reject tokens issued for any other agent
           action: 'create_order',
           scopeRequirements: SCOPES, // defence in depth: scope, permissions and modality match your card
+          requireProof: true, // the token must be presented by the key it's bound to
         });
         // … place the order; claims.authorization_modality says what human backing it has
       }
@@ -135,6 +136,7 @@ import {
   parseAgentCardExtension,
   withParafe,
   withConsentToken,
+  withSessionClosed,
   extractHandshakeComplete,
 } from '@getparafe/a2a-extension';
 
@@ -166,8 +168,14 @@ const reply = await a2a.sendMessage({
 }, activate);
 const { session_id, consent_token } = extractHandshakeComplete(reply);
 
-// 3. Every following message carries the token
-await a2a.sendMessage({ message: withConsentToken(newMessage('Two dozen glazed for 9am.'), consent_token, session_id) }, activate);
+// 3. Every following message carries the token, and a proof that you hold the key it's bound to
+const message = newMessage('Two dozen glazed for 9am.');
+const proof = await parafe.createPresentationProof(consent_token, message.messageId); // or createPresentationProof(token, privateKey)
+await a2a.sendMessage({ message: withConsentToken(message, consent_token, session_id, proof) }, activate);
+
+// 4. When you close the session, tell the agent and hand it the receipt
+const receipt = await parafe.closeSession(session_id);
+await a2a.sendMessage({ message: withSessionClosed(newMessage('Thanks!'), session_id, receipt.receipt) }, activate);
 ```
 
 The SDK picks the right activation header for the A2A version it negotiated. Sending raw HTTP? Use `activationHeaders()`: `A2A-Version: 1.0` + `A2A-Extensions` for A2A 1.0, or `X-A2A-Extensions` for A2A 0.3.
@@ -176,20 +184,21 @@ The SDK picks the right activation header for the A2A version it negotiated. Sen
 
 ## Verification
 
-`verifyMessageConsentToken(message, brokerPublicKey, { agentId, action?, scopeRequirements? })` does all of this. `verifyConsentTokenOffline(token, key, options)` does it for a bare token.
+`verifyMessageConsentToken(message, brokerKeys, { agentId, action?, scopeRequirements?, requireProof? })` does all of this. `verifyConsentTokenOffline(token, keys, options)` does it for a bare token (without the proof).
 
 | Check | Error |
 |---|---|
-| Ed25519 signature, issuer `parafe-trust-broker`, `token_type: consent` | `InvalidConsentTokenError` |
+| Broker signature (ES256 by `kid` from the JWKS; EdDSA for tokens before 2026-09-30), issuer `parafe-trust-broker`, `token_type: consent` | `InvalidConsentTokenError` |
 | Not expired | `ExpiredConsentTokenError` |
 | `target_agent_id` is you (`agentId`) | `WrongAudienceError` |
 | The message's `session_id` matches the token's | `InvalidConsentTokenError` |
 | `action` is permitted and not excluded | `ScopeViolationError` |
-| Scope declared, permissions within it, modality ≥ minimum (`scopeRequirements`) | `ScopeViolationError` |
+| Scope declared, permissions within it, modality ≥ minimum, `initiator_proof` meets `minimum_initiator_proof` (`scopeRequirements`) | `ScopeViolationError` |
+| Presentation proof (when sent, or required by `requireProof`): signed by the key in the token's `cnf.jkt`, for this token, its audience and this message, fresh, not replayed | `InvalidProofError` |
 | No consent token in the message | `MissingParafeExtensionError` |
 | Parafé data present but malformed | `MalformedParafeDataError` |
 
-Fetch the broker key once with `fetchBrokerPublicKey()` and cache it. There's no network call per message. For real-time confirmation on high-value actions, `verifyConsentTokenOnline(token, { action, agentId })` asks the broker.
+Fetch the broker keys once with `fetchBrokerKeys()` and cache them. There's no network call per message, except the first time an initiator's key is needed to check a proof: it's fetched from the initiator's DID document at the broker and cached (pass `initiatorKey` to avoid even that). Tokens name their initiator (`sub`), their target (`aud`, a DID) and the key they're bound to (`cnf.jkt`); `claims.exclusions` and `claims.initiator_proof` (`pop` or `credential`) say what's forbidden and how the initiator proved itself. `requireProof` is off by default in 2.x and will be on in 3.0. For real-time confirmation on high-value actions, `verifyConsentTokenOnline(token, { action, agentId })` asks the broker.
 
 Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error` data for your reply, and never leaks the message of an error that isn't ours.
 
@@ -202,7 +211,10 @@ Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error
 | `buildAgentCardExtension({ agentId, scopeRequirements, required, brokerUrl?, minimumIdentityAssurance?, description? })` | Agent card entry |
 | `parseAgentCardExtension(extensions)` | Read a card's Parafé entry (v2 or v1 URI), or `null` |
 | `withParafe(message, data)` | Copy of `message` with Parafé data in metadata and the URI in `extensions` |
-| `withConsentToken(message, token, sessionId)` | Shorthand for `withParafe(message, { consent: … })` |
+| `withConsentToken(message, token, sessionId, proof?)` | Shorthand for `withParafe(message, { consent: … })` |
+| `withSessionClosed(message, sessionId, receipt)` / `extractSessionClosed(message)` | Tell the other side the session is over, with the receipt JWS |
+| `createPresentationProof(token, privateKey, { messageId? })` | Initiator: the proof to send with a key-bound token |
+| `verifyPresentationProof(proof, token, claims, options?)` | Check a proof yourself |
 | `readParafe(message, { acceptV1? })` | The message's Parafé data, or `null` |
 | `extractHandshakeChallenge` / `extractHandshakeComplete` / `extractConsentToken` / `extractParafeError` `(message)` | One member, or `null` |
 | `hasParafeData(message)` | Any Parafé data present? |
@@ -212,7 +224,8 @@ Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error
 | `verifyMessageConsentToken(message, key, options)` | Extract + verify in one step |
 | `verifyConsentTokenOffline(token, key, options?)` | Verify a token locally |
 | `verifyConsentTokenOnline(token, options)` | Verify via the broker's `/consent/verify` |
-| `fetchBrokerPublicKey(brokerUrl?)` | The broker's Ed25519 key, as PEM |
+| `fetchBrokerKeys(brokerUrl?)` | The broker's signing keys (JWKS) |
+| `fetchBrokerPublicKey(brokerUrl?)` | The broker's retired Ed25519 key, as PEM (tokens before 2026-09-30) |
 
 Messages can be `@a2a-js/sdk` `Message` objects or raw A2A 1.0 / 0.3 JSON.
 

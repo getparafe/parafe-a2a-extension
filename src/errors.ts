@@ -102,7 +102,21 @@ export class WrongAudienceError extends Error {
   }
 }
 
+/**
+ * Thrown when a presentation proof is missing (and required) or doesn't check
+ * out: wrong key, wrong token, wrong audience or message, stale, or replayed.
+ */
+export class InvalidProofError extends Error {
+  readonly code = 'INVALID_PROOF';
+
+  constructor(detail: string) {
+    super(`Parafe presentation proof rejected: ${detail}`);
+    this.name = 'InvalidProofError';
+  }
+}
+
 type ParafeError =
+  | InvalidProofError
   | MissingParafeExtensionError
   | InvalidConsentTokenError
   | ExpiredConsentTokenError
@@ -113,6 +127,7 @@ type ParafeError =
 /** True for any error class this package throws. */
 export function isParafeError(err: unknown): err is ParafeError {
   return (
+    err instanceof InvalidProofError ||
     err instanceof MissingParafeExtensionError ||
     err instanceof InvalidConsentTokenError ||
     err instanceof ExpiredConsentTokenError ||

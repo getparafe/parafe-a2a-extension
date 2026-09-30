@@ -1,6 +1,6 @@
 {
   "name": "@getparafe/a2a-extension",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Parafé trust extension for the A2A protocol (A2A 1.0 and 0.3) — cryptographic agent identity, mutual authentication, and scoped consent carried in A2A message metadata",
   "type": "module",
   "main": "./dist/index.cjs",

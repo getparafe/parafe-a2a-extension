@@ -62,6 +62,22 @@ export interface ConsentTokenPayload {
   token: string;
   /** Session ID linking this interaction to the authenticated session. */
   session_id: string;
+  /**
+   * Presentation proof (2.1): a short JWT signed with the initiator's key,
+   * showing the token is presented by the key it is bound to (`cnf.jkt`).
+   * Create it with createPresentationProof().
+   */
+  proof?: string | undefined;
+}
+
+/**
+ * `session_closed` (2.1): sent by the participant that closed the session, so
+ * the other side knows it's over and holds the receipt.
+ */
+export interface SessionClosedPayload {
+  session_id: string;
+  /** The session receipt: a compact JWS signed by the broker. */
+  receipt: string;
 }
 
 /** Error codes an agent reports in Parafe `error` data. */
@@ -71,7 +87,8 @@ export type ParafeErrorCode =
   | 'INVALID_CONSENT_TOKEN'
   | 'WRONG_AUDIENCE'
   | 'EXPIRED_CONSENT_TOKEN'
-  | 'SCOPE_VIOLATION';
+  | 'SCOPE_VIOLATION'
+  | 'INVALID_PROOF';
 
 /**
  * `error`: sent by an agent when it refuses an action for a Parafe reason.
@@ -89,6 +106,7 @@ export type ParafeMessageData =
   | { handshake_challenge: HandshakeChallengePayload }
   | { handshake_complete: HandshakeCompletePayload }
   | { consent: ConsentTokenPayload }
+  | { session_closed: SessionClosedPayload }
   | { error: ParafeErrorPayload };
 
 // ---------------------------------------------------------------------------
@@ -101,6 +119,12 @@ export interface ScopeRequirement {
   permissions: string[];
   /** Minimum authorization modality required. */
   minimum_authorization_modality: 'autonomous' | 'attested' | 'verified';
+  /**
+   * Require the initiator to have proved it holds its key ('pop') when the
+   * token was issued, not just shown its credential. The broker enforces this
+   * too when it's in the agent's registered scope policy.
+   */
+  minimum_initiator_proof?: 'pop' | 'credential';
 }
 
 /** The params block inside a Parafe AgentCard extension entry. */
@@ -158,8 +182,26 @@ export interface ParafeConsentClaims {
   scope: string;
   /** Array of permitted actions within this scope. */
   permissions: string[];
-  /** Array of explicitly excluded actions. */
+  /**
+   * Explicitly excluded actions. Consent token v2 (broker 2026-09-30+) calls the
+   * claim `exclusions`; older tokens `excluded`. The verifier sets both.
+   */
+  exclusions: string[];
+  /** The pre-v2 name of `exclusions`; also set by the verifier. */
   excluded: string[];
+  /** 2 for key-bound tokens. */
+  ver?: number;
+  /** Initiator agent ID (v2). */
+  sub?: string;
+  /** Target agent DID (v2). */
+  aud?: string;
+  /** The key the token is bound to: RFC 7638 thumbprint of the initiator's registered key (v2). */
+  cnf?: { jkt: string };
+  /** Random token ID (v2). */
+  jti?: string;
+  /** How the initiator proved itself when the token was issued: 'pop' or 'credential'. */
+  initiator_proof?: 'pop' | 'credential';
+  initiator_proof_at?: number;
   /** The session ID this token belongs to. */
   session_id: string;
   /** Always "consent" for consent tokens. */
@@ -204,6 +246,33 @@ export interface VerifyConsentOptions {
  */
 export interface VerifyMessageOptions extends Omit<VerifyConsentOptions, 'sessionId'> {
   agentId: string;
+  /**
+   * Require a presentation proof with the token (key binding). Default false in
+   * 2.x; true in 3.0. A proof that is sent is always checked.
+   */
+  requireProof?: boolean;
+  /**
+   * The initiator's registered public key (JWK), to check the proof against.
+   * If omitted, it's fetched from the initiator's DID document at the broker
+   * (`brokerUrl`) and cached.
+   */
+  initiatorKey?: JsonWebKeyLike;
+  /** Broker URL for fetching the initiator's DID document. Defaults to DEFAULT_BROKER_URL. */
+  brokerUrl?: string;
+}
+
+/** A public JWK (Ed25519 or P-256). */
+export interface JsonWebKeyLike {
+  kty: string;
+  crv?: string;
+  x?: string;
+  y?: string;
+  [key: string]: unknown;
+}
+
+/** The broker's signing keys, from fetchBrokerKeys(): its JWKS. */
+export interface BrokerKeys {
+  keys: Array<JsonWebKeyLike & { kid: string; alg?: string; status?: string }>;
 }
 
 /**
@@ -218,4 +287,6 @@ export interface VerifyOnlineOptions {
   sessionId?: string;
   /** Your own Parafe agent ID. When given, the token's target_agent_id must match it. */
   agentId?: string;
+  /** The initiator's presentation proof, if it sent one; the broker checks it against the token's cnf.jkt. */
+  proof?: string;
 }

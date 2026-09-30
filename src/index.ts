@@ -17,6 +17,7 @@ export type {
   HandshakeChallengePayload,
   HandshakeCompletePayload,
   ConsentTokenPayload,
+  SessionClosedPayload,
   ParafeErrorCode,
   ParafeErrorPayload,
   ParafeMessageData,
@@ -36,6 +37,8 @@ export type {
   VerifyConsentOptions,
   VerifyMessageOptions,
   VerifyOnlineOptions,
+  BrokerKeys,
+  JsonWebKeyLike,
 } from './types.js';
 
 // Errors
@@ -46,6 +49,7 @@ export {
   ScopeViolationError,
   MalformedParafeDataError,
   WrongAudienceError,
+  InvalidProofError,
   isParafeError,
 } from './errors.js';
 
@@ -53,11 +57,13 @@ export {
 export {
   withParafe,
   withConsentToken,
+  withSessionClosed,
   parafeErrorData,
   readParafe,
   extractHandshakeChallenge,
   extractHandshakeComplete,
   extractConsentToken,
+  extractSessionClosed,
   extractParafeError,
   hasParafeData,
 } from './message.js';
@@ -77,6 +83,9 @@ export {
   verifyConsentTokenOffline,
   verifyConsentTokenOnline,
   fetchBrokerPublicKey,
+  fetchBrokerKeys,
   verifyMessageConsentToken,
+  verifyPresentationProof,
+  createPresentationProof,
 } from './verification.js';
 export type { ConsentVerifyResult } from './verification.js';
