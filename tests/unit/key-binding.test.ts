@@ -17,6 +17,7 @@ import {
   ScopeViolationError,
   PARAFE_EXTENSION_URI,
   type BrokerKeys,
+  type Parties,
 } from '../../src/index.js';
 
 const broker = generateKeyPairSync('ec', { namedCurve: 'P-256' });
@@ -49,6 +50,13 @@ describe('broker keys and consent token v2', () => {
     expect(claims.exclusions).toEqual(['issue_refund']);
     expect(claims.initiator_proof).toBe('pop');
     expect(claims.aud).toBe(SHOP_DID);
+  });
+
+  it('SPEC-002: returns the parties the broker names (operator and principal)', async () => {
+    const parties: Parties = { operator: { type: 'org', id: 'prf_org_p' }, principal: { type: 'external', ref: 'user-8f3a' } };
+    const claims = await verifyConsentTokenOffline(await tokenV2({ initiator_parties: parties, target_parties: { operator: { type: 'org', id: 'prf_org_s' }, principal: { type: 'org', id: 'prf_org_s' } } }), KEYS, { agentId: 'prf_agent_shop' });
+    expect(claims.initiator_parties).toEqual(parties);
+    expect(claims.target_parties?.principal).toEqual({ type: 'org', id: 'prf_org_s' });
   });
 
   it('3.0: refuses a token signed by the retired Ed25519 key, even though the JWKS lists it', async () => {

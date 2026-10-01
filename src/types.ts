@@ -194,6 +194,17 @@ export interface BuildAgentCardOptions {
  * Decoded and verified claims from a Parafe consent token JWT.
  * Matches the shape produced by the broker's createConsentToken() in src/crypto/jwt.js.
  */
+/**
+ * Broker SPEC-002: who runs an agent (operator) and who it acts for
+ * (principal). A person's user ID is never shown: a personal operator or
+ * principal has `type` only; an org has `id`; an external principal (one of a
+ * platform's users) has the platform's opaque `ref`.
+ */
+export interface Parties {
+  operator: { type: 'personal' | 'org'; id?: string } | null;
+  principal: { type: 'personal' | 'org' | 'external'; id?: string; ref?: string } | null;
+}
+
 export interface ParafeConsentClaims {
   /** The requested scope name (e.g. "flight-rebooking"). Single string, not an array. */
   scope: string;
@@ -229,6 +240,10 @@ export interface ParafeConsentClaims {
   initiator_agent_id: string | null;
   /** Agent ID of the handshake target — the agent this token was issued for. */
   target_agent_id: string | null;
+  /** Broker SPEC-002: the initiator's operator and principal. */
+  initiator_parties?: Parties;
+  /** Broker SPEC-002: the target's operator and principal. */
+  target_parties?: Parties;
   /** Token this one was escalated from, if any. */
   parent_token_id?: string | null;
   /** Issued-at timestamp (seconds since epoch). */

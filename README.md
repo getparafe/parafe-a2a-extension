@@ -287,7 +287,8 @@ Messages can be `@a2a-js/sdk` `Message` objects or raw A2A 1.0 / 0.3 JSON.
 - **Broker keys are a JWKS.** `fetchBrokerPublicKey()` and PEM keys are gone: pass `fetchBrokerKeys()` or, better, `createBrokerKeyCache()`. Only ES256 consent tokens verify (the broker has signed ES256 since 2026-09-30).
 - **`claims.exclusions` only.** The verifier no longer sets the old `claims.excluded`; a token without `exclusions` is refused.
 - **No v1 data.** Readers ignore 1.x-style data parts, `acceptV1` and `ReadParafeOptions` are gone, `parseAgentCardExtension` ignores the v1 URI, and `PARAFE_EXTENSION_URI_V1` and the `PARAFE_V1_*` constants are removed.
-- Agent cards may require `minimum_identity_assurance: 'claimed'` (an agent its owner approved).
+- Agent cards may require `minimum_identity_assurance: 'claimed'` (an agent its principal approved).
+- Consent token claims name both parties (3.1, broker SPEC-002): `initiator_parties` and `target_parties`, each `{ operator, principal }` (type `Parties`): who runs the agent and who it acts for.
 
 ## Migrating from 1.x
 

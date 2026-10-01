@@ -31,6 +31,7 @@ export type {
 // Types — Verification
 export type {
   ParafeConsentClaims,
+  Parties,
   VerifyConsentOptions,
   VerifyMessageOptions,
   VerifyOnlineOptions,

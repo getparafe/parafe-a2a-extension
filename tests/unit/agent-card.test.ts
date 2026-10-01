@@ -99,7 +99,7 @@ describe('parseAgentCardExtension', () => {
     expect(parseAgentCardExtension([{ uri: 'https://github.com/getparafe/parafe-a2a-extension/v1', required: true, params }])).toBeNull();
   });
 
-  it("accepts minimum_identity_assurance 'claimed' (an owner-approved agent)", () => {
+  it("accepts minimum_identity_assurance 'claimed' (an agent its principal approved)", () => {
     const result = parseAgentCardExtension([{ uri: PARAFE_EXTENSION_URI, required: true, params: { ...params, minimum_identity_assurance: 'claimed' } }]);
     expect(result?.params.minimum_identity_assurance).toBe('claimed');
   });

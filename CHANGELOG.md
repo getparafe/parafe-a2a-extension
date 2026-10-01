@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.0 (2026-10-01)
+
+Additive. Broker SPEC-002 (operator and principal): consent tokens name who runs each agent (its *operator*) and who it acts for (its *principal*).
+
+- `ParafeConsentClaims` gains `initiator_parties` and `target_parties` (new exported type `Parties`: `{ operator: { type, id? } | null, principal: { type, id?, ref? } | null }`). A person's user ID is never shown; an org shows its `id`; a platform's user (`external`) shows the platform's opaque `ref`.
+
 ## 3.0.0 (2026-09-30)
 
 Breaking. Removes what only older brokers and 1.x senders needed (no one runs them). See "Migrating from 2.x" in the README.
