@@ -23,11 +23,11 @@ TypeScript package that adds Parafe trust to the A2A (Agent-to-Agent) protocol, 
 ```bash
 npm install
 npm run build          # tsup → CJS + ESM + types
-npm test               # Unit tests
+npm test               # Unit, interop and integration tests (integration skipped without PARAFE_TEST_BROKER_URL)
 npm run test:integration  # Integration tests (requires PARAFE_TEST_BROKER_URL)
 ```
 
-Integration tests run against the staging broker. Set `PARAFE_TEST_BROKER_URL` or it defaults to `http://localhost:3000`.
+Integration tests run only when `PARAFE_TEST_BROKER_URL` is set; otherwise they're skipped. CI sets it to staging (the `STAGING_BROKER_URL` secret).
 
 ## Key Design Decisions
 
@@ -37,12 +37,12 @@ Integration tests run against the staging broker. Set `PARAFE_TEST_BROKER_URL` o
 - **No A2A SDK dependency** — types are structural so the package works with any SDK or raw JSON. `@a2a-js/sdk` is a devDependency for interop tests only.
 - **Online + offline verification** — `verifyConsentTokenOnline` calls the broker. `verifyConsentTokenOffline` verifies against the cached JWKS without network. Both available.
 - **Key binding (2.1)** — a consent token names the initiator's key (`cnf.jkt`); `verifyMessageConsentToken` checks the presentation proof whenever one is sent, and requires one unless `requireProof: false` (default on since 3.0).
-- **Response shape validation** — Online verification validates broker response shape (`verification.ts:163-167`) before trusting it.
-- **HTTPS enforcement** — Warns when broker URL is non-HTTPS for non-localhost (`verification.ts:103-111`).
+- **Response shape validation** — Online verification validates broker response shape (`verification.ts`, `verifyConsentTokenOnline`) before trusting it.
+- **HTTPS warning** — `verifyConsentTokenOnline` warns (doesn't refuse) when the broker URL is non-HTTPS and not localhost. Key fetches, DID fetches and receipt filing don't check.
 
 ## When Making Changes
 
 - If modifying verification logic, run both unit and integration tests.
 - If A2A or `@a2a-js/sdk` changes, bump the devDependency and run `npm run test:interop` first.
 - This package does not depend on `@getparafe/sdk` (only `jose`). It makes its own HTTP calls for online verification and fetching the broker key.
-- Published via npm. Run `npm run build` and `npm test` before publishing.
+- Published to npm by `publish.yml` when a GitHub release is published (the tag must equal the package version; trusted publishing; it runs the integration tests against staging). Run `npm run build` and `npm test` before tagging.

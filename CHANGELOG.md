@@ -71,9 +71,9 @@ Follows A2A protocol 1.0. Breaking. See "Migrating from 1.x" in the README.
 - Removed the deprecated `/compat` export.
 - Interop tests against a real `@a2a-js/sdk` server (A2A 1.0 client, raw A2A 1.0 and 0.3 JSON-RPC, 1.x senders) run in CI.
 
-## 1.0.0 (2026-03-29)
+## 1.0.0 (2026-03-28)
 
-Initial release.
+First stable release.
 
 - Offline and online consent token verification (`verifyConsentTokenOffline`, `verifyConsentTokenOnline`, `verifyMessageConsentToken`)
 - AgentCard extension builder and parser (`buildAgentCardExtension`, `parseAgentCardExtension`)
@@ -81,3 +81,7 @@ Initial release.
 - Handshake challenge validation constants (`PARAFE_HANDSHAKE_CHALLENGE`, `PARAFE_HANDSHAKE_COMPLETE`, `PARAFE_TRUST_CONSENT_TOKEN`)
 - Error classes for structured error handling (`MissingParafeExtensionError`, `InvalidConsentTokenError`, `ExpiredConsentTokenError`, `ScopeViolationError`, `MalformedDataPartError`)
 - Deprecated compatibility module (`@getparafe/a2a-extension/compat`) for v0.2.0 metadata-based API
+
+## 0.1.0, 0.2.0 (2026-03-28)
+
+Pre-releases (0.2.0: the metadata-based API kept in 1.0's `/compat`). Superseded by 1.0.0.

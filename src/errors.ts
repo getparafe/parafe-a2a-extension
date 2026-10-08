@@ -1,5 +1,5 @@
 /**
- * Thrown when a required Parafe DataPart or metadata field is absent.
+ * Thrown when the message carries no Parafé data (in message metadata) where some is required.
  */
 export class MissingParafeExtensionError extends Error {
   readonly code = 'MISSING_PARAFE_EXTENSION';
@@ -16,7 +16,7 @@ export class MissingParafeExtensionError extends Error {
 }
 
 /**
- * Thrown when a consent token's Ed25519 signature is invalid or the JWT is malformed.
+ * Thrown when a consent token's ES256 signature is invalid or the JWT is malformed.
  */
 export class InvalidConsentTokenError extends Error {
   readonly code = 'INVALID_CONSENT_TOKEN';

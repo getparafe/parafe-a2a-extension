@@ -22,7 +22,7 @@ npm install @getparafe/a2a-extension
 1. The **agent** (the one being called) declares its Parafé requirements, per scope, in its agent card.
 2. The **client** (the calling agent) starts a handshake with the Parafé broker and sends the broker's challenge in an A2A message.
 3. The agent completes the handshake with the broker and returns a broker-signed **consent token**.
-4. The client includes the token in every following message. The agent verifies it before acting: offline, with the broker's public key.
+4. The client includes the token in every following message. The agent verifies it before acting: offline, with the broker's public keys (JWKS).
 
 All Parafé data rides in the message's **metadata**, under the extension URI, and never in message `parts`. Agents usually hand `parts` to a language model and store them in chat logs. A consent token belongs in neither.
 
@@ -34,7 +34,7 @@ All Parafé data rides in the message's **metadata**, under the extension URI, a
   "extensions": ["https://parafe.ai/extensions/a2a/v2"],
   "metadata": {
     "https://parafe.ai/extensions/a2a/v2": {
-      "consent": { "token": "eyJhbGciOiJFZERTQSJ9…", "session_id": "sess_7d2…" }
+      "consent": { "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6…", "session_id": "sess_7d2…" }
     }
   }
 }
@@ -51,12 +51,12 @@ You need a Parafé account ([platform.parafe.ai](https://platform.parafe.ai)) an
 ### 1. Declare Parafé in your agent card
 
 ```typescript
-import { buildAgentCardExtension } from '@getparafe/a2a-extension';
+import { buildAgentCardExtension, type ScopeRequirement } from '@getparafe/a2a-extension';
 
-export const SCOPES = {
+export const SCOPES: Record<string, ScopeRequirement> = {
   'check-menu': { permissions: ['read_menu'], minimum_authorization_modality: 'autonomous' },
   'order-donuts': { permissions: ['read_menu', 'create_order'], minimum_authorization_modality: 'attested' },
-} as const;
+};
 // Modalities, weakest to strongest: autonomous < attested < delegated < verified.
 // 'delegated' and 'verified' mean the broker checked a user-signed AP2 mandate
 // (claims.mandate_refs lists it); set ap2_trusted_issuers in the broker scope policy.
@@ -72,7 +72,7 @@ const card = {
 };
 ```
 
-**Say what the broker enforces, from the broker.** Build `scope_requirements` from your agent's scope policies so the card can't drift from them: who the initiator must be (`minimum_identity_assurance`, `minimum_verification_tier`), `exclusions`, reputation floors, and the AP2 issuers you trust (by key thumbprint):
+**Say what the broker enforces, from the broker.** Build `scope_requirements` from your agent's scope policies so the card matches them when you build it (rebuild it when a policy changes): who the initiator must be (`minimum_identity_assurance`, `minimum_verification_tier`), `exclusions`, reputation floors, and the AP2 issuers you trust (by key thumbprint):
 
 ```typescript
 import { scopeRequirementsFromPolicies } from '@getparafe/a2a-extension';
@@ -248,11 +248,13 @@ capabilities: { extensions: [buildAgentCardExtension({ agentId, scopeRequirement
 | The message's `session_id` matches the token's | `InvalidConsentTokenError` |
 | `action` is permitted and not excluded | `ScopeViolationError` |
 | Scope declared, permissions within it, modality ≥ minimum, `initiator_proof` meets `minimum_initiator_proof` (`scopeRequirements`) | `ScopeViolationError` |
-| Presentation proof (required unless `requireProof: false`; always checked when sent): signed by the key in the token's `cnf.jkt`, for this token, its audience and this message, fresh, not replayed | `InvalidProofError` |
+| Presentation proof (required unless `requireProof: false`; always checked when sent): signed by the key in the token's `cnf.jkt`, for this token and its audience, for this message when the proof names one (`mid`), fresh, not replayed (replays are remembered per process) | `InvalidProofError` |
 | No consent token in the message | `MissingParafeExtensionError` |
 | Parafé data present but malformed | `MalformedParafeDataError` |
 
 Hold the broker keys with `createBrokerKeyCache()`: it fetches them on first use and, if a token names a key it doesn't have yet (the broker rotated or added one), refetches once and retries, at most once a minute. There's no network call per message, except the first time an initiator's key is needed to check a proof: it's fetched from the initiator's DID document at the broker and cached (pass `initiatorKey` to avoid even that). Tokens name their initiator (`sub`), their target (`aud`, a DID) and the key they're bound to (`cnf.jkt`); `claims.exclusions` and `claims.initiator_proof` (`pop` or `credential`) say what's forbidden and how the initiator proved itself. A token sent without a presentation proof is refused unless you pass `requireProof: false`. For real-time confirmation on high-value actions, `verifyConsentTokenOnline(token, { action, agentId })` asks the broker.
+
+**What offline verification can't see.** A token that verifies offline may belong to an agent revoked or suspended since it was issued, or to a session that's over: only the broker knows. It stays valid offline until `exp` (consent tokens last 5 minutes). The online check (`POST /consent/verify`) refuses tokens of revoked agents at once; use it when that gap matters.
 
 Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error` data for your reply, and never leaks the message of an error that isn't ours.
 
@@ -283,6 +285,12 @@ Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error
 | `verifyConsentTokenOnline(token, options)` | Verify via the broker's `/consent/verify` |
 | `createBrokerKeyCache(brokerUrl?, { minRefetchIntervalMs? })` | The broker's signing keys, refetched when a token names a new key (use this) |
 | `fetchBrokerKeys(brokerUrl?)` | The broker's signing keys (JWKS), fetched once |
+| `scopeRequirementsFromPolicies(scopePolicies)` | 3.2: card `scope_requirements` built from the broker's scope policies |
+| `actionErrorFor(err, action, exclusions?)` | The action-receipt error code for a refusal |
+| `jcs(value)` | RFC 8785 canonical JSON (for `details_hash`) |
+| `signAp2Receipt(privateKey, input)` / `ap2MandateReferences(mandate)` | Sign an AP2 Checkout or Payment Receipt (P-256 key); a mandate's two reference forms |
+| `withAp2(message, data)` / `readAp2(message)` / `buildAp2AgentCardExtension(options?)` | AP2 data in A2A messages (provisional, spec 5.3) |
+| `isParafeError(err)` | Is this one of this package's errors? |
 
 Messages can be `@a2a-js/sdk` `Message` objects or raw A2A 1.0 / 0.3 JSON.
 
@@ -296,8 +304,8 @@ Messages can be `@a2a-js/sdk` `Message` objects or raw A2A 1.0 / 0.3 JSON.
 - **Broker keys are a JWKS.** `fetchBrokerPublicKey()` and PEM keys are gone: pass `fetchBrokerKeys()` or, better, `createBrokerKeyCache()`. Only ES256 consent tokens verify (the broker has signed ES256 since 2026-09-30).
 - **`claims.exclusions` only.** The verifier no longer sets the old `claims.excluded`; a token without `exclusions` is refused.
 - **No v1 data.** Readers ignore 1.x-style data parts, `acceptV1` and `ReadParafeOptions` are gone, `parseAgentCardExtension` ignores the v1 URI, and `PARAFE_EXTENSION_URI_V1` and the `PARAFE_V1_*` constants are removed.
-- Agent cards may require `minimum_identity_assurance: 'claimed'` (an agent its principal approved).
-- Consent token claims name both parties (3.1, broker SPEC-002): `initiator_parties` and `target_parties`, each `{ operator, principal }` (type `Parties`): who runs the agent and who it acts for.
+- Agent cards may state `minimum_identity_assurance: 'claimed'`. The broker ranks `claimed` equal to `registered` (`self_registered` < `registered` = `claimed`), so it also admits operator-registered agents.
+- Consent token claims name both parties (3.1): `initiator_parties` and `target_parties`, each `{ operator, principal }` (type `Parties`): who runs the agent and who it acts for.
 
 ## Migrating from 1.x
 

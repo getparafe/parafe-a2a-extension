@@ -300,7 +300,7 @@ export interface ParafeConsentClaims {
  * Checks applied by verifyConsentTokenOffline() on top of signature and expiry.
  */
 export interface VerifyConsentOptions {
-  /** An action that must be in `permissions` and not in `excluded`. */
+  /** An action that must be in `permissions` and not in `exclusions`. */
   action?: string;
   /** Your own Parafe agent ID. The token's target_agent_id must match it. */
   agentId?: string;
