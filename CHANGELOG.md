@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.3.0 (2026-10-08)
+
+Fixes. Needs the broker from 2026-10-08 for the refusal codes and `agent_id`. No API is removed; `credential` and `InvalidConsentTokenError` accept more.
+
+- **DID documents come from your broker, not production.** `verifyMessageConsentToken` fetched the initiator's DID document (for the presentation proof) from production unless `brokerUrl` was passed, so an agent on staging or a local broker refused every proof. Keys from `fetchBrokerKeys(url)` and `createBrokerKeyCache(url)` now remember their broker (`brokerUrl`; not enumerable on a `fetchBrokerKeys()` result, so the JWKS serializes unchanged), and `verifyMessageConsentToken` uses it when `brokerUrl` isn't given. A JWKS you build yourself still means production. Cached initiator keys are keyed by broker too, and trailing slashes in broker URLs are ignored.
+- **Action receipt signer: say which broker.** The signer has no keys to learn the broker from and still defaults to production: pass `brokerUrl` (the README samples now do). `verifyMessageConsentToken` warns once when its `receipts` signer files with another broker than the keys came from, a failed filing names the broker, and the signer exposes `brokerUrl`.
+- **Renewed credentials.** `createActionReceiptSigner({ credential })` takes a function returning the current credential (sync or async), read at each filing. A string held across a renewal (which revokes it) made every filing fail with 401 and `filed` resolve to `null`.
+- **`verifyConsentTokenOnline` reads the broker's refusal code (P-53).** It used to report any reason containing "expired" as `ExpiredConsentTokenError`, so a forged token (broker reason: "signature invalid or token expired") was reported as expired and its refusal receipt said `consent_expired`. It now maps `error`: `token_expired` → `ExpiredConsentTokenError` (with the token's `exp`), `wrong_audience` → `WrongAudienceError`, `proof_invalid` → `InvalidProofError`, `token_invalid` / `agent_revoked` / `session_inactive` / `session_not_found` / `session_mismatch` → `InvalidConsentTokenError` with a message that says which (only `token_invalid` suggests tampering). A refusal without a code is `InvalidConsentTokenError`, never expired.
+- **`verifyConsentTokenOnline` sends `agent_id`** when `agentId` is given, so the broker refuses a token issued for another agent (`wrong_audience`); `verifyMessageConsentToken` already checks it locally.
+- `InvalidConsentTokenError(detail, advice?)`: the second argument replaces the default "has not been tampered with" advice (`''` for none).
+
 ## 3.2.0 (2026-10-08)
 
 Additive. Broker SPEC-003 part 2 (MUSE-24): an agent card can state who the initiator must be and which AP2 mandate issuers a scope trusts, as fields rather than prose.

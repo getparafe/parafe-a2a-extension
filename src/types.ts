@@ -331,7 +331,11 @@ export interface VerifyMessageOptions extends Omit<VerifyConsentOptions, 'sessio
    * (`brokerUrl`) and cached.
    */
   initiatorKey?: JsonWebKeyLike;
-  /** Broker URL for fetching the initiator's DID document. Defaults to DEFAULT_BROKER_URL. */
+  /**
+   * Broker URL for fetching the initiator's DID document. Defaults to the broker
+   * the keys came from (fetchBrokerKeys(url) / createBrokerKeyCache(url)), else
+   * DEFAULT_BROKER_URL (a JWKS you built yourself).
+   */
   brokerUrl?: string;
   /**
    * 2.2: action receipts. When the consent check fails, an error receipt is
@@ -354,6 +358,12 @@ export interface JsonWebKeyLike {
 /** The broker's signing keys, from fetchBrokerKeys(): its JWKS. */
 export interface BrokerKeys {
   keys: Array<JsonWebKeyLike & { kid: string; alg?: string; status?: string }>;
+  /**
+   * The broker the keys came from, set by fetchBrokerKeys() (not enumerable: the
+   * JWKS serializes unchanged). verifyMessageConsentToken() fetches DID documents
+   * from it when `brokerUrl` isn't given.
+   */
+  readonly brokerUrl?: string;
 }
 
 /**
@@ -366,7 +376,11 @@ export interface VerifyOnlineOptions {
   action: string;
   /** The session ID to validate against. If omitted, extracted from the token's session_id claim. */
   sessionId?: string;
-  /** Your own Parafe agent ID. When given, the token's target_agent_id must match it. */
+  /**
+   * Your own Parafe agent ID. When given, the token's target_agent_id must match it:
+   * it is sent to the broker (`agent_id`), which refuses another agent's token
+   * (`wrong_audience`), and checked here too.
+   */
   agentId?: string;
   /** The initiator's presentation proof, if it sent one; the broker checks it against the token's cnf.jkt. */
   proof?: string;

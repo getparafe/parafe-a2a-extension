@@ -15,19 +15,25 @@ export class MissingParafeExtensionError extends Error {
   }
 }
 
+const TAMPER_ADVICE = 'Verify the token was issued by the Parafe broker and has not been tampered with.';
+
 /**
- * Thrown when a consent token's ES256 signature is invalid or the JWT is malformed.
+ * Thrown when a consent token's ES256 signature is invalid or the JWT is malformed,
+ * or when the broker refuses a token for another reason than expiry, audience or
+ * proof (its session is over or unknown, an agent in it was revoked).
  */
 export class InvalidConsentTokenError extends Error {
   readonly code = 'INVALID_CONSENT_TOKEN';
   /** 2.2: the error action receipt signed for this refusal (verifyMessageConsentToken with `receipts`). */
   actionReceipt?: string;
 
-  constructor(detail?: string) {
-    super(
-      `Parafe consent token is invalid${detail ? `: ${detail}` : '.'}` +
-        ' Verify the token was issued by the Parafe broker and has not been tampered with.'
-    );
+  /**
+   * @param detail - What is wrong.
+   * @param advice - What to do about it. The default (check where the token came
+   *   from) fits a bad signature or a malformed token; '' adds nothing.
+   */
+  constructor(detail?: string, advice: string = TAMPER_ADVICE) {
+    super(`Parafe consent token is invalid${detail ? `: ${detail}` : '.'}${advice ? ` ${advice}` : ''}`);
     this.name = 'InvalidConsentTokenError';
   }
 }

@@ -181,31 +181,29 @@ export async function verifyConsentTokenOnline(
 
   let response: Response;
   try {
-    response = await fetch(`${brokerUrl}/consent/verify`, {
+    response = await fetch(`${trimSlash(brokerUrl)}/consent/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         consent_token: token,
         action: options.action,
         session_id: sessionId,
+        // The verifying agent: the broker refuses a token issued for another one (wrong_audience).
+        ...(options.agentId !== undefined ? { agent_id: options.agentId } : {}),
         ...(options.proof ? { proof: options.proof } : {}),
       }),
     });
   } catch (err) {
     throw new InvalidConsentTokenError(
-      `Could not reach Parafe broker at ${brokerUrl}: ${err instanceof Error ? err.message : String(err)}`
+      `Could not reach Parafe broker at ${brokerUrl}: ${err instanceof Error ? err.message : String(err)}`,
+      ''
     );
   }
 
   const body = await response.json().catch(() => ({})) as Record<string, unknown>;
 
   if (!response.ok) {
-    const reason = typeof body['reason'] === 'string' ? body['reason'] : response.statusText;
-    if (body['error'] === 'proof_invalid') throw new InvalidProofError(reason);
-    if (reason.toLowerCase().includes('expired')) {
-      throw new ExpiredConsentTokenError(new Date());
-    }
-    throw new InvalidConsentTokenError(body['error'] === 'agent_revoked' ? `agent revoked: ${reason}` : reason);
+    throw onlineRefusal(token, body, response, options.agentId);
   }
 
   if (body['valid'] === true && body['permitted'] === false) {
@@ -216,7 +214,8 @@ export async function verifyConsentTokenOnline(
   // Validate required fields in broker response
   if (typeof body['valid'] !== 'boolean' || typeof body['permitted'] !== 'boolean' || typeof body['action'] !== 'string') {
     throw new InvalidConsentTokenError(
-      `Unexpected response from broker /consent/verify — missing or invalid fields (valid: ${typeof body['valid']}, permitted: ${typeof body['permitted']}, action: ${typeof body['action']})`
+      `Unexpected response from broker /consent/verify — missing or invalid fields (valid: ${typeof body['valid']}, permitted: ${typeof body['permitted']}, action: ${typeof body['action']})`,
+      ''
     );
   }
 
@@ -243,6 +242,52 @@ export async function verifyConsentTokenOnline(
   };
 }
 
+/**
+ * The error for a refusal from POST /consent/verify, from the code the broker
+ * names it with (`error`, on every refusal since 2026-10-08).
+ */
+function onlineRefusal(token: string, body: Record<string, unknown>, response: Response, agentId: string | undefined): Error {
+  const reason = typeof body['reason'] === 'string' ? body['reason']
+    : typeof body['message'] === 'string' ? body['message']
+    : response.statusText || `HTTP ${response.status}`;
+  const code = typeof body['error'] === 'string' ? body['error'] : undefined;
+  const sentence = reason.replace(/\.?$/, '.');
+  const claim = (name: string): unknown => {
+    try {
+      return decodeJwt(token)[name];
+    } catch {
+      return undefined;
+    }
+  };
+  const expired = () => {
+    const exp = claim('exp');
+    return new ExpiredConsentTokenError(typeof exp === 'number' ? new Date(exp * 1000) : new Date());
+  };
+
+  switch (code) {
+    case 'token_expired':
+      return expired();
+    case 'wrong_audience': {
+      const target = claim('target_agent_id');
+      return new WrongAudienceError(agentId ?? '(not given)', typeof target === 'string' ? target : null);
+    }
+    case 'proof_invalid':
+      return new InvalidProofError(reason);
+    case 'token_invalid': // bad signature, malformed, not a consent token
+      return new InvalidConsentTokenError(sentence);
+    case 'agent_revoked':
+      return new InvalidConsentTokenError(`an agent in this session was revoked or suspended (${reason}).`, '');
+    case 'session_inactive':
+      return new InvalidConsentTokenError(`its session is closed or expired (${reason}).`, 'Start a new handshake.');
+    case 'session_not_found':
+      return new InvalidConsentTokenError(`the broker has no such session (${reason}).`, '');
+    case 'session_mismatch':
+      return new InvalidConsentTokenError(`it belongs to another session (${reason}).`, '');
+    default: // validation_error, rate limits, internal errors
+      return new InvalidConsentTokenError(`the broker refused to verify it (${response.status} ${code ?? 'no code'}: ${reason}).`, '');
+  }
+}
+
 /** Result from the broker's /consent/verify endpoint. */
 export interface ConsentVerifyResult {
   valid: boolean;
@@ -258,6 +303,11 @@ export interface ConsentVerifyResult {
 
 /** Broker keys that refresh themselves; from createBrokerKeyCache(). */
 export interface BrokerKeyCache {
+  /**
+   * The broker the keys come from. verifyMessageConsentToken() fetches DID
+   * documents from it when `brokerUrl` isn't given.
+   */
+  readonly brokerUrl?: string;
   /** The cached keys, fetched on first use. */
   get(): Promise<BrokerKeys>;
   /** Refetch now, unless the last fetch was under `minRefetchIntervalMs` ago (then null). */
@@ -268,17 +318,29 @@ function isBrokerKeyCache(value: unknown): value is BrokerKeyCache {
   return typeof value === 'object' && value !== null && typeof (value as BrokerKeyCache).refresh === 'function';
 }
 
+const trimSlash = (url: string) => url.replace(/\/+$/, '');
+
+/** The broker a key set or key cache came from (fetchBrokerKeys / createBrokerKeyCache), when known. */
+function brokerUrlOf(keys: BrokerKeys | BrokerKeyCache): string | undefined {
+  const url = (keys as { brokerUrl?: unknown } | null)?.brokerUrl;
+  return typeof url === 'string' && url !== '' ? url : undefined;
+}
+
 /**
  * The recommended way to hold the broker's keys in a long-running agent. Pass
  * it wherever broker keys are accepted. It fetches the JWKS on first use and,
  * when a token names a key it doesn't have (the broker rotated or added a key),
  * refetches once and retries, at most once per `minRefetchIntervalMs`
  * (default 60 s). A plain fetchBrokerKeys() result never updates.
+ *
+ * The cache remembers its broker (`brokerUrl`): verifyMessageConsentToken()
+ * fetches initiators' DID documents from it unless told otherwise.
  */
 export function createBrokerKeyCache(
   brokerUrl: string = DEFAULT_BROKER_URL,
   options: { minRefetchIntervalMs?: number } = {}
 ): BrokerKeyCache {
+  brokerUrl = trimSlash(brokerUrl);
   const minInterval = options.minRefetchIntervalMs ?? 60_000;
   let keys: Promise<BrokerKeys> | null = null;
   let fetchedAt = 0;
@@ -290,6 +352,7 @@ export function createBrokerKeyCache(
     return p;
   };
   return {
+    brokerUrl,
     get: () => keys ?? load(),
     async refresh() {
       if (Date.now() - fetchedAt < minInterval) return null;
@@ -301,9 +364,11 @@ export function createBrokerKeyCache(
 /**
  * Fetches the broker's signing keys (its JWKS, at /.well-known/jwks.json), once.
  * For a long-running agent prefer createBrokerKeyCache(), which also picks up
- * keys the broker adds later.
+ * keys the broker adds later. The result remembers its broker (`brokerUrl`, not
+ * enumerable), for verifyMessageConsentToken() to fetch DID documents from.
  */
 export async function fetchBrokerKeys(brokerUrl: string = DEFAULT_BROKER_URL): Promise<BrokerKeys> {
+  brokerUrl = trimSlash(brokerUrl);
   let response: Response;
   try {
     response = await fetch(`${brokerUrl}/.well-known/jwks.json`);
@@ -317,6 +382,7 @@ export async function fetchBrokerKeys(brokerUrl: string = DEFAULT_BROKER_URL): P
   if (!body || !Array.isArray(body.keys)) {
     throw new Error('Unexpected response shape from Parafe broker /.well-known/jwks.json — expected "keys"');
   }
+  Object.defineProperty(body, 'brokerUrl', { value: brokerUrl, enumerable: false, configurable: true });
   return body;
 }
 
@@ -325,6 +391,10 @@ export async function fetchBrokerKeys(brokerUrl: string = DEFAULT_BROKER_URL): P
  * reads the Parafe data (see readParafe), verifies the token offline, and checks that
  * it was issued for `agentId`, belongs to the session the message names, and permits
  * `action` (if given).
+ *
+ * The initiator's DID document (for the presentation proof) is fetched from
+ * `options.brokerUrl`, else from the broker the keys came from
+ * (fetchBrokerKeys(url) / createBrokerKeyCache(url)), else DEFAULT_BROKER_URL.
  *
  * Throws MissingParafeExtensionError if the message carries no consent token.
  *
@@ -351,7 +421,10 @@ export async function verifyMessageConsentToken(
    */
   completeAction: (outcome?: Partial<Omit<ActionReceiptInput, 'sessionId' | 'consentToken'>>) => Promise<RecordedActionReceipt>;
 }> {
-  const { requireProof = true, initiatorKey, brokerUrl, receipts, ...checks } = options;
+  const { requireProof = true, initiatorKey, brokerUrl: brokerUrlOption, receipts, ...checks } = options;
+  // DID documents come from the broker the keys came from, unless told otherwise.
+  const brokerUrl = brokerUrlOption ?? brokerUrlOf(brokerKeys);
+  if (receipts) warnOnBrokerMismatch(receipts, brokerUrl);
   const consent = extractConsentToken(message);
   if (consent === null) {
     throw new MissingParafeExtensionError('No Parafe consent token found in the message.');
@@ -395,6 +468,18 @@ export async function verifyMessageConsentToken(
   return { claims, sessionId: consent.session_id, proofVerified, consentToken: consent.token, completeAction };
 }
 
+/** Signers already warned about filing with another broker than the keys came from. */
+const warnedSigners = new WeakSet<object>();
+function warnOnBrokerMismatch(receipts: { brokerUrl?: string | undefined }, brokerUrl: string | undefined): void {
+  if (receipts.brokerUrl === undefined || brokerUrl === undefined || warnedSigners.has(receipts)) return;
+  if (trimSlash(receipts.brokerUrl) === trimSlash(brokerUrl)) return;
+  warnedSigners.add(receipts);
+  console.warn(
+    `[parafe] action receipts are filed with ${receipts.brokerUrl}, but this agent verifies consent against ${brokerUrl}. ` +
+      'Pass the same brokerUrl to createActionReceiptSigner().'
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Presentation proofs (key-bound consent tokens, 2.1)
 // ---------------------------------------------------------------------------
@@ -413,10 +498,12 @@ function claimProofJti(jti: string): boolean {
   return true;
 }
 
-/** Initiator keys fetched from DID documents, by agent ID (10 minutes). */
+/** Initiator keys fetched from DID documents, by broker and agent ID (10 minutes). */
 const didKeyCache = new Map<string, { jwk: JsonWebKeyLike; at: number }>();
 async function initiatorJwk(agentId: string, brokerUrl: string): Promise<JsonWebKeyLike> {
-  const cached = didKeyCache.get(agentId);
+  brokerUrl = trimSlash(brokerUrl);
+  const cacheKey = `${brokerUrl}|${agentId}`;
+  const cached = didKeyCache.get(cacheKey);
   if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.jwk;
   let res: Response;
   try {
@@ -424,11 +511,11 @@ async function initiatorJwk(agentId: string, brokerUrl: string): Promise<JsonWeb
   } catch (err) {
     throw new InvalidProofError(`could not fetch the initiator's DID document: ${err instanceof Error ? err.message : String(err)}`);
   }
-  if (!res.ok) throw new InvalidProofError(`the initiator's DID document is unavailable (${res.status}); is the agent revoked?`);
+  if (!res.ok) throw new InvalidProofError(`the initiator's DID document is unavailable at ${brokerUrl} (${res.status}); is the agent revoked, or registered with another broker?`);
   const doc = (await res.json()) as { verificationMethod?: Array<{ publicKeyJwk?: JsonWebKeyLike }> };
   const jwk = doc.verificationMethod?.[0]?.publicKeyJwk;
   if (!jwk) throw new InvalidProofError("the initiator's DID document has no public key");
-  didKeyCache.set(agentId, { jwk, at: Date.now() });
+  didKeyCache.set(cacheKey, { jwk, at: Date.now() });
   return jwk;
 }
 
@@ -440,7 +527,8 @@ function b64url(bytes: ArrayBuffer): string {
  * Checks a presentation proof against a verified consent token: signed by the
  * key in `cnf.jkt`, for this token (`ath`), for the token's audience (`aud`),
  * fresh (5 minutes), not seen before, and for this message (`mid`, when given).
- * Throws InvalidProofError.
+ * Without `initiatorKey`, the key is read from the initiator's DID document at
+ * `brokerUrl` (default DEFAULT_BROKER_URL). Throws InvalidProofError.
  */
 export async function verifyPresentationProof(
   proof: string,

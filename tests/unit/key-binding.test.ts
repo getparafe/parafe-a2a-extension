@@ -167,3 +167,63 @@ describe('createBrokerKeyCache (FRICTION #68: a key added after startup)', () =>
     }
   });
 });
+
+describe('the broker the keys came from (DID documents for proofs)', () => {
+  const didDoc = { id: 'did:web:x:agents:prf_agent_alex', verificationMethod: [{ publicKeyJwk: initiatorJwk }] };
+  /** fetch stub serving the JWKS and the initiator's DID document; records every URL. */
+  async function stubBroker() {
+    const { vi } = await import('vitest');
+    const urls: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url: string) => {
+      urls.push(url);
+      const body = url.endsWith('/.well-known/jwks.json') ? KEYS : didDoc;
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+    return { urls, restore: () => { globalThis.fetch = realFetch; } };
+  }
+  const message = async (token: string) =>
+    ({ messageId: 'msg-1', ...withConsentToken({ parts: [] }, token, 'sess_1', await createPresentationProof(token, initiator.privateKey)) });
+
+  it('fetchBrokerKeys(url) and createBrokerKeyCache(url) remember their broker; the JWKS serializes unchanged', async () => {
+    const { fetchBrokerKeys, createBrokerKeyCache } = await import('../../src/index.js');
+    const broker = await stubBroker();
+    try {
+      const keys = await fetchBrokerKeys('https://staging.test/');
+      expect(broker.urls).toEqual(['https://staging.test/.well-known/jwks.json']);
+      expect(keys.brokerUrl).toBe('https://staging.test');
+      expect(JSON.parse(JSON.stringify(keys))).toEqual(KEYS);
+      expect(createBrokerKeyCache('https://local.test:3000/').brokerUrl).toBe('https://local.test:3000');
+    } finally {
+      broker.restore();
+    }
+  });
+
+  it('verifyMessageConsentToken fetches the initiator DID document from the key cache\'s broker, not production', async () => {
+    const { createBrokerKeyCache } = await import('../../src/index.js');
+    const broker = await stubBroker();
+    try {
+      const r = await verifyMessageConsentToken(await message(await tokenV2()), createBrokerKeyCache('https://staging.test'), { agentId: 'prf_agent_shop' });
+      expect(r.proofVerified).toBe(true);
+      expect(broker.urls).toEqual(['https://staging.test/.well-known/jwks.json', 'https://staging.test/agents/prf_agent_alex/did.json']);
+    } finally {
+      broker.restore();
+    }
+  });
+
+  it('…and from a fetchBrokerKeys() result\'s broker; `brokerUrl` overrides; a JWKS you built uses the default broker', async () => {
+    const { fetchBrokerKeys } = await import('../../src/index.js');
+    const broker = await stubBroker();
+    try {
+      const keys = await fetchBrokerKeys('http://localhost:3999');
+      await verifyMessageConsentToken(await message(await tokenV2()), keys, { agentId: 'prf_agent_shop' });
+      expect(broker.urls.at(-1)).toBe('http://localhost:3999/agents/prf_agent_alex/did.json');
+      await verifyMessageConsentToken(await message(await tokenV2()), keys, { agentId: 'prf_agent_shop', brokerUrl: 'https://other.test' });
+      expect(broker.urls.at(-1)).toBe('https://other.test/agents/prf_agent_alex/did.json');
+      await verifyMessageConsentToken(await message(await tokenV2()), KEYS, { agentId: 'prf_agent_shop' });
+      expect(broker.urls.at(-1)).toBe('https://api.parafe.ai/agents/prf_agent_alex/did.json');
+    } finally {
+      broker.restore();
+    }
+  });
+});

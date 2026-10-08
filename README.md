@@ -101,10 +101,16 @@ import {
   createActionReceiptSigner,
 } from '@getparafe/a2a-extension';
 
-const parafe = new ParafeClient({ brokerUrl: 'https://api.parafe.ai', apiKey: process.env.PARAFE_API_KEY });
-const brokerKeys = createBrokerKeyCache(); // the broker's JWKS; refetches if the broker adds a key
+const BROKER_URL = 'https://api.parafe.ai'; // or staging / http://localhost:3000; the same one as in your agent card
+const parafe = new ParafeClient({ brokerUrl: BROKER_URL, apiKey: process.env.PARAFE_API_KEY });
+const brokerKeys = createBrokerKeyCache(BROKER_URL); // the broker's JWKS; refetches if the broker adds a key
 // 2.2: sign an action receipt for what this agent does or refuses; filed with the broker in the background
-const receipts = createActionReceiptSigner({ agentId: 'prf_agent_donuts01', privateKey, credential });
+const receipts = createActionReceiptSigner({
+  agentId: 'prf_agent_donuts01',
+  privateKey,
+  brokerUrl: BROKER_URL, // default: production
+  credential: () => parafe.exportKeys().credential, // read at each filing, so a renewed credential is used
+});
 
 class ShopExecutor implements AgentExecutor {
   async execute(ctx: RequestContext, bus: ExecutionEventBus) {
@@ -142,7 +148,9 @@ class ShopExecutor implements AgentExecutor {
 
 Not using `@a2a-js/sdk`? The same functions take plain A2A JSON messages, and `isParafeActivated(req.headers)` tells you whether the request activated the extension.
 
-**Action receipts (2.2).** With `receipts`, a failed consent check signs an error receipt (`excluded`, `not_permitted`, `consent_expired`, `proof_invalid` or `consent_invalid`), files it and attaches it to the thrown error; `parafeErrorData(err)` returns it to the client in `action_receipts`, beside the `error`. On success, `completeAction()` signs and files the receipt for the outcome. Filing runs in the background: call `receipts.flush()` before you close the session. The broker learns action names, results and your `businessRef`, never the message content (`details` and `request` are sent only as hashes). Without a consent token in the message there's nothing to bind a receipt to, so none is signed. **If a language model decides which tools to call,** tell it to attempt the tool and let the consent check refuse: a model that declines a forbidden request on its own never reaches the check, so the refusal isn't receipted.
+**Use one broker URL everywhere.** Keys from `createBrokerKeyCache(url)` or `fetchBrokerKeys(url)` remember their broker (`brokerUrl`), and `verifyMessageConsentToken` fetches initiators' DID documents from it unless you pass `brokerUrl`. The receipt signer doesn't see your keys: pass it `brokerUrl` too (it defaults to production, and `verifyMessageConsentToken` warns once when the signer files with another broker than the keys came from). Use the same URL in `buildAgentCardExtension({ brokerUrl })`.
+
+**Action receipts (2.2).** With `receipts`, a failed consent check signs an error receipt (`excluded`, `not_permitted`, `consent_expired`, `proof_invalid` or `consent_invalid`), files it and attaches it to the thrown error; `parafeErrorData(err)` returns it to the client in `action_receipts`, beside the `error`. On success, `completeAction()` signs and files the receipt for the outcome. Filing runs in the background: call `receipts.flush()` before you close the session; a failed filing goes to `onFileError` (default `console.warn`, naming the broker), and its `filed` resolves to `null`. Renewing the agent's credential revokes the old one, so pass `credential` as a function that returns the current one (read at each filing), not a string, if the agent renews while running. The broker learns action names, results and your `businessRef`, never the message content (`details` and `request` are sent only as hashes). Without a consent token in the message there's nothing to bind a receipt to, so none is signed. **If a language model decides which tools to call,** tell it to attempt the tool and let the consent check refuse: a model that declines a forbidden request on its own never reaches the check, so the refusal isn't receipted.
 
 ---
 
@@ -211,7 +219,7 @@ The SDK picks the right activation header for the A2A version it negotiated. Sen
 If your agent is a merchant and a shopping agent presents an [AP2](https://github.com/google-agentic-commerce/AP2) v0.2 Checkout Mandate, AP2 says you MUST answer with a Checkout Receipt, for a rejection too. After verifying the mandate (the broker's `POST /ap2/mandates/verify` via `@getparafe/sdk`'s `verifyMandate()`, or offline with `@getparafe/verify`'s `verifyAp2Mandate`), sign the receipt with your agent's P-256 key and file it in the session's index:
 
 ```typescript
-const receipts = createActionReceiptSigner({ agentId, privateKey, credential });
+const receipts = createActionReceiptSigner({ agentId, privateKey, brokerUrl, credential: () => parafe.exportKeys().credential });
 const { receipt, reference, references } = await receipts.ap2Receipt(sessionId, verified.valid
   ? { kind: 'checkout', mandate, orderId: order.id }
   : { kind: 'checkout', mandate, error: verified.error, errorDescription: verified.message });
@@ -238,7 +246,7 @@ capabilities: { extensions: [buildAgentCardExtension({ agentId, scopeRequirement
 
 ## Verification
 
-`verifyMessageConsentToken(message, brokerKeys, { agentId, action?, scopeRequirements?, requireProof? })` does all of this (`requireProof` defaults to true). `verifyConsentTokenOffline(token, keys, options)` does it for a bare token (without the proof).
+`verifyMessageConsentToken(message, brokerKeys, { agentId, action?, scopeRequirements?, requireProof?, initiatorKey?, brokerUrl?, receipts? })` does all of this (`requireProof` defaults to true; `brokerUrl`, where initiators' DID documents are fetched, defaults to the broker the keys came from). `verifyConsentTokenOffline(token, keys, options)` does it for a bare token (without the proof).
 
 | Check | Error |
 |---|---|
@@ -252,7 +260,7 @@ capabilities: { extensions: [buildAgentCardExtension({ agentId, scopeRequirement
 | No consent token in the message | `MissingParafeExtensionError` |
 | Parafé data present but malformed | `MalformedParafeDataError` |
 
-Hold the broker keys with `createBrokerKeyCache()`: it fetches them on first use and, if a token names a key it doesn't have yet (the broker rotated or added one), refetches once and retries, at most once a minute. There's no network call per message, except the first time an initiator's key is needed to check a proof: it's fetched from the initiator's DID document at the broker and cached (pass `initiatorKey` to avoid even that). Tokens name their initiator (`sub`), their target (`aud`, a DID) and the key they're bound to (`cnf.jkt`); `claims.exclusions` and `claims.initiator_proof` (`pop` or `credential`) say what's forbidden and how the initiator proved itself. A token sent without a presentation proof is refused unless you pass `requireProof: false`. For real-time confirmation on high-value actions, `verifyConsentTokenOnline(token, { action, agentId })` asks the broker.
+Hold the broker keys with `createBrokerKeyCache()`: it fetches them on first use and, if a token names a key it doesn't have yet (the broker rotated or added one), refetches once and retries, at most once a minute. There's no network call per message, except the first time an initiator's key is needed to check a proof: it's fetched from the initiator's DID document at the broker and cached (pass `initiatorKey` to avoid even that). Tokens name their initiator (`sub`), their target (`aud`, a DID) and the key they're bound to (`cnf.jkt`); `claims.exclusions` and `claims.initiator_proof` (`pop` or `credential`) say what's forbidden and how the initiator proved itself. A token sent without a presentation proof is refused unless you pass `requireProof: false`. For real-time confirmation on high-value actions, `verifyConsentTokenOnline(token, { action, agentId, brokerUrl?, sessionId?, proof? })` asks the broker (`brokerUrl` defaults to production). It sends `agent_id`, so the broker refuses a token issued for another agent, and maps the broker's refusal code: `token_expired` → `ExpiredConsentTokenError`; `wrong_audience` → `WrongAudienceError`; `proof_invalid` → `InvalidProofError`; `token_invalid` (bad signature, malformed), `agent_revoked`, `session_inactive` (closed or expired), `session_not_found` and `session_mismatch` → `InvalidConsentTokenError`, whose message says which. From a broker that gives no code, "signature invalid or token expired" is reported as invalid, not expired.
 
 **What offline verification can't see.** A token that verifies offline may belong to an agent revoked or suspended since it was issued, or to a session that's over: only the broker knows. It stays valid offline until `exp` (consent tokens last 5 minutes). The online check (`POST /consent/verify`) refuses tokens of revoked agents at once; use it when that gap matters.
 
@@ -270,21 +278,21 @@ Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error
 | `withConsentToken(message, token, sessionId, proof?)` | Shorthand for `withParafe(message, { consent: … })` |
 | `withSessionClosed(message, sessionId, receipt)` / `extractSessionClosed(message)` | Tell the other side the session is over, with the receipt JWS |
 | `createPresentationProof(token, privateKey, { messageId? })` | Initiator: the proof to send with a key-bound token |
-| `createActionReceiptSigner({ agentId, privateKey, credential, brokerUrl?, agentDid?, file? })` | 2.2: sign (`sign`), file (`file`), both (`record`), receipt a refusal (`refuse`); `flush()` before close |
-| `signActionReceipt(privateKey, agentDid, input)` / `fileActionReceipt(receipt, { sessionId, credential, privateKey })` | The same, as functions |
+| `createActionReceiptSigner({ agentId, privateKey, credential, brokerUrl?, agentDid?, file?, onFileError? })` | 2.2: sign (`sign`), file (`file`), both (`record`), receipt a refusal (`refuse`); `flush()` before close. `credential`: a string, or a function returning the current one (read at each filing). `brokerUrl` defaults to production |
+| `signActionReceipt(privateKey, agentDid, input)` / `fileActionReceipt(receipt, { sessionId, credential, privateKey, brokerUrl?, kind? })` | The same, as functions (`brokerUrl` defaults to production) |
 | `withActionReceipts(message, receipts)` / `extractActionReceipts(message)` | Attach the action receipts you signed (beside any other Parafé data, or alone); read them |
-| `verifyPresentationProof(proof, token, claims, options?)` | Check a proof yourself |
+| `verifyPresentationProof(proof, token, claims, { initiatorKey?, brokerUrl?, messageId? })` | Check a proof yourself (without `initiatorKey`, the DID document is read at `brokerUrl`, default production) |
 | `readParafe(message)` | The message's Parafé data, or `null` |
 | `extractHandshakeChallenge` / `extractHandshakeComplete` / `extractConsentToken` / `extractParafeError` `(message)` | One member, or `null` |
 | `hasParafeData(message)` | Any Parafé data present? |
 | `parafeErrorData(err)` | `{ error: { code, message }, action_receipts? }` for a refusal |
 | `activationHeaders(a2aVersion?, otherExtensions?)` | HTTP headers that activate the extension |
 | `isParafeActivated(headers)` | Did this request activate it? |
-| `verifyMessageConsentToken(message, key, options)` | Extract + verify in one step |
+| `verifyMessageConsentToken(message, key, options)` | Extract + verify in one step; `brokerUrl` defaults to the keys' broker |
 | `verifyConsentTokenOffline(token, key, options?)` | Verify a token locally |
-| `verifyConsentTokenOnline(token, options)` | Verify via the broker's `/consent/verify` |
-| `createBrokerKeyCache(brokerUrl?, { minRefetchIntervalMs? })` | The broker's signing keys, refetched when a token names a new key (use this) |
-| `fetchBrokerKeys(brokerUrl?)` | The broker's signing keys (JWKS), fetched once |
+| `verifyConsentTokenOnline(token, { action, agentId?, brokerUrl?, sessionId?, proof? })` | Verify via the broker's `/consent/verify` (`brokerUrl` defaults to production) |
+| `createBrokerKeyCache(brokerUrl?, { minRefetchIntervalMs? })` | The broker's signing keys, refetched when a token names a new key (use this); remembers `brokerUrl` (default production) |
+| `fetchBrokerKeys(brokerUrl?)` | The broker's signing keys (JWKS), fetched once; the result remembers `brokerUrl` (not enumerable) |
 | `scopeRequirementsFromPolicies(scopePolicies)` | 3.2: card `scope_requirements` built from the broker's scope policies |
 | `actionErrorFor(err, action, exclusions?)` | The action-receipt error code for a refusal |
 | `jcs(value)` | RFC 8785 canonical JSON (for `details_hash`) |

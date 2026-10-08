@@ -162,6 +162,56 @@ describe('verifyMessageConsentToken() with receipts', () => {
   });
 });
 
+describe('createActionReceiptSigner(): credential and broker', () => {
+  it('credential as a function is read at each filing, so a renewed credential is used', async () => {
+    stubBroker();
+    let current = 'cred.old';
+    const receipts = createActionReceiptSigner({ agentId: 'prf_agent_shop', agentDid: SHOP_DID, privateKey: shop.privateKey, credential: async () => current, brokerUrl: 'https://broker.test' });
+    await receipts.file('sess_1', 'x.y.z');
+    current = 'cred.renewed'; // the agent renewed; the broker revoked cred.old
+    await (await receipts.record({ sessionId: 'sess_1', consentToken: await token(), action: 'create_order' })).filed;
+    expect(filed.map((f) => f.headers.Authorization)).toEqual(['Bearer cred.old', 'Bearer cred.renewed']);
+  });
+
+  it('a credential function that returns nothing fails the filing (reported, not thrown); a credential that is neither is refused', async () => {
+    stubBroker();
+    const onFileError = vi.fn();
+    const receipts = createActionReceiptSigner({ agentId: 'prf_agent_shop', agentDid: SHOP_DID, privateKey: shop.privateKey, credential: () => '', brokerUrl: 'https://broker.test', onFileError });
+    expect(await (await receipts.record({ sessionId: 'sess_1', consentToken: await token(), action: 'create_order' })).filed).toBeNull();
+    expect(onFileError).toHaveBeenCalledOnce();
+    expect(filed).toHaveLength(0);
+    expect(() => createActionReceiptSigner({ agentId: 'a', privateKey: shop.privateKey, credential: undefined as unknown as string })).toThrow(TypeError);
+  });
+
+  it('a failed filing names the broker, so filing with the wrong one shows', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'invalid_credential', message: 'unknown' }), { status: 401 })));
+    const receipts = createActionReceiptSigner({ agentId: 'prf_agent_shop', agentDid: SHOP_DID, privateKey: shop.privateKey, credential: 'c' });
+    expect(receipts.brokerUrl).toBe('https://api.parafe.ai');
+    await expect(receipts.file('sess_1', 'x.y.z')).rejects.toThrow('with https://api.parafe.ai failed (401 invalid_credential)');
+  });
+
+  it('verifyMessageConsentToken warns (once) when the signer files with another broker than the keys came from', async () => {
+    const { createBrokerKeyCache } = await import('../../src/index.js');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(KEYS), { status: 200 })));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const keys = createBrokerKeyCache('https://staging.test');
+      const jwk = initiator.publicKey.export({ format: 'jwk' }) as JWK;
+      const production = createActionReceiptSigner({ agentId: 'prf_agent_shop', agentDid: SHOP_DID, privateKey: shop.privateKey, credential: 'c', file: false });
+      for (let i = 0; i < 2; i++) {
+        await verifyMessageConsentToken(await message(await token()), keys, { agentId: 'prf_agent_shop', action: 'create_order', receipts: production, initiatorKey: jwk });
+      }
+      expect(warn).toHaveBeenCalledOnce();
+      expect(String(warn.mock.calls[0]![0])).toMatch(/filed with https:\/\/api\.parafe\.ai, but .* against https:\/\/staging\.test/);
+      const staging = createActionReceiptSigner({ agentId: 'prf_agent_shop', agentDid: SHOP_DID, privateKey: shop.privateKey, credential: 'c', file: false, brokerUrl: 'https://staging.test/' });
+      await verifyMessageConsentToken(await message(await token()), keys, { agentId: 'prf_agent_shop', action: 'create_order', receipts: staging, initiatorKey: jwk });
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe('action_receipts message data', () => {
   it('alone, or beside a member; withParafe keeps receipts attached earlier; duplicates collapse', async () => {
     const r1 = await signActionReceipt(shop.privateKey, SHOP_DID, { sessionId: 'sess_1', consentToken: 't', action: 'read_menu' });

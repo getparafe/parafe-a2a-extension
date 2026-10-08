@@ -32,6 +32,13 @@ describe('error classes', () => {
     expect(err.message).toContain('bad signature');
   });
 
+  it('InvalidConsentTokenError advises checking the token by default; other advice, or none, when given', () => {
+    expect(new InvalidConsentTokenError('bad signature').message).toMatch(/bad signature.*tampered with\.$/);
+    expect(new InvalidConsentTokenError('its session is over.', 'Start a new handshake.').message)
+      .toBe('Parafe consent token is invalid: its session is over. Start a new handshake.');
+    expect(new InvalidConsentTokenError('agent revoked.', '').message).toBe('Parafe consent token is invalid: agent revoked.');
+  });
+
   it('InvalidConsentTokenError works without detail', () => {
     const err = new InvalidConsentTokenError();
     expect(err.code).toBe('INVALID_CONSENT_TOKEN');

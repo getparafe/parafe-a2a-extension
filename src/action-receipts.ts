@@ -84,9 +84,19 @@ export interface ActionReceiptSignerOptions {
   agentId: string;
   /** Your agent's private key (a Node KeyObject or WebCrypto CryptoKey; Ed25519 or P-256). */
   privateKey: KeyLike;
-  /** Your agent's credential (to file receipts with the broker). */
-  credential: string;
-  /** Default DEFAULT_BROKER_URL. */
+  /**
+   * Your agent's credential, to file receipts with the broker: the credential, or
+   * a function that returns the current one, read at each filing. Pass a function
+   * if the agent renews its credential while running (e.g.
+   * `() => parafe.exportKeys().credential`): renewal revokes the old credential,
+   * and filings with it fail (401).
+   */
+  credential: string | (() => string | Promise<string>);
+  /**
+   * The broker to file receipts with (and to read your DID document from).
+   * Default DEFAULT_BROKER_URL (production): pass the broker your agent uses
+   * (staging, local), the same URL as your broker keys and agent card.
+   */
   brokerUrl?: string;
   /** Your agent's DID. Default: read once from your DID document at the broker. */
   agentDid?: string;
@@ -98,6 +108,8 @@ export interface ActionReceiptSignerOptions {
 
 export interface ActionReceiptSigner {
   readonly agentId: string;
+  /** The broker receipts are filed with. */
+  readonly brokerUrl?: string;
   /** Sign an action receipt. */
   sign(input: ActionReceiptInput): Promise<string>;
   /** File a receipt (yours, the other agent's, or an AP2 receipt with its kind) and wait for the acknowledgment. */
@@ -199,7 +211,7 @@ export async function fileActionReceipt(
   receipt: string,
   opts: { sessionId: string; credential: string; privateKey: KeyLike; brokerUrl?: string; kind?: ActionReceiptKind }
 ): Promise<ActionReceiptAck> {
-  const brokerUrl = (opts.brokerUrl ?? DEFAULT_BROKER_URL).replace(/\/$/, '');
+  const brokerUrl = (opts.brokerUrl ?? DEFAULT_BROKER_URL).replace(/\/+$/, '');
   const url = `${brokerUrl}/sessions/${encodeURIComponent(opts.sessionId)}/action-receipts`;
   const proof = await new SignJWT({ htm: 'POST', htu: url, session_id: opts.sessionId, jti: crypto.randomUUID() })
     .setProtectedHeader({ alg: algOf(opts.privateKey), typ: POP_TYP })
@@ -226,7 +238,7 @@ export async function fileActionReceipt(
   });
   if (res.status === 201) return ack(false);
   if (res.status === 409 && body['error'] === 'duplicate_receipt' && typeof body['acknowledgment'] === 'string') return ack(true);
-  throw new Error(`Filing the action receipt failed (${res.status} ${String(body['error'] ?? '')}): ${String(body['message'] ?? '')}`);
+  throw new Error(`Filing the action receipt with ${brokerUrl} failed (${res.status} ${String(body['error'] ?? '')}): ${String(body['message'] ?? '')}`);
 }
 
 /** Agent DIDs read from DID documents, by broker and agent ID. */
@@ -249,15 +261,21 @@ async function resolveAgentDid(brokerUrl: string, agentId: string): Promise<stri
  * (`receipts`) to receipt refusals automatically; call `flush()` before closing
  * the session.
  *
+ * Set `brokerUrl` unless your agent uses the production broker, and pass
+ * `credential` as a function if the agent renews its credential while running.
+ *
  * @example
- * const receipts = createActionReceiptSigner({ agentId, privateKey, credential });
+ * const receipts = createActionReceiptSigner({ agentId, privateKey, brokerUrl, credential: () => parafe.exportKeys().credential });
  * const { completeAction } = await verifyMessageConsentToken(msg, keys, { agentId, action: 'create_order', receipts });
  * const order = await createOrder(...);
  * const { receipt } = await completeAction({ businessRef: order.id });
  * reply = withActionReceipts(reply, [receipt]);
  */
 export function createActionReceiptSigner(options: ActionReceiptSignerOptions): ActionReceiptSigner {
-  const brokerUrl = (options.brokerUrl ?? DEFAULT_BROKER_URL).replace(/\/$/, '');
+  if (typeof options.credential !== 'string' && typeof options.credential !== 'function') {
+    throw new TypeError('credential must be the agent credential or a function that returns it');
+  }
+  const brokerUrl = (options.brokerUrl ?? DEFAULT_BROKER_URL).replace(/\/+$/, '');
   const fileByDefault = options.file ?? true;
   const pending = new Set<Promise<unknown>>();
   const onFileError = options.onFileError ?? ((err: unknown) => {
@@ -265,8 +283,15 @@ export function createActionReceiptSigner(options: ActionReceiptSignerOptions): 
   });
   const did = async () => options.agentDid ?? resolveAgentDid(brokerUrl, options.agentId);
 
-  const file = (sessionId: string, receipt: string, kind?: ActionReceiptKind) =>
-    fileActionReceipt(receipt, { sessionId, credential: options.credential, privateKey: options.privateKey, brokerUrl, ...(kind ? { kind } : {}) });
+  // Read at each filing: a renewed credential replaces the old one, which the broker revoked.
+  const credential = async (): Promise<string> => {
+    const c = typeof options.credential === 'function' ? await options.credential() : options.credential;
+    if (typeof c !== 'string' || c === '') throw new TypeError('credential() returned no credential');
+    return c;
+  };
+
+  const file = async (sessionId: string, receipt: string, kind?: ActionReceiptKind) =>
+    fileActionReceipt(receipt, { sessionId, credential: await credential(), privateKey: options.privateKey, brokerUrl, ...(kind ? { kind } : {}) });
 
   const inBackground = (sessionId: string, receipt: string, kind?: ActionReceiptKind): Promise<ActionReceiptAck | null> => {
     const filed: Promise<ActionReceiptAck | null> = file(sessionId, receipt, kind).catch((err) => {
@@ -286,6 +311,7 @@ export function createActionReceiptSigner(options: ActionReceiptSignerOptions): 
 
   return {
     agentId: options.agentId,
+    brokerUrl,
     sign: async (input) => signActionReceipt(options.privateKey, await did(), input),
     file,
     record,
