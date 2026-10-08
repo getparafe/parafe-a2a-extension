@@ -72,6 +72,15 @@ const card = {
 };
 ```
 
+**Say what the broker enforces, from the broker.** Build `scope_requirements` from your agent's scope policies so the card can't drift from them: who the initiator must be (`minimum_identity_assurance`, `minimum_verification_tier`), `exclusions`, reputation floors, and the AP2 issuers you trust (by key thumbprint):
+
+```typescript
+import { scopeRequirementsFromPolicies } from '@getparafe/a2a-extension';
+
+const { scope_policies } = await (await fetch(`https://api.parafe.ai/agents/${agentId}/scope-policies`)).json();
+const scopeRequirements = await scopeRequirementsFromPolicies(scope_policies);
+```
+
 **`required` is a real choice:**
 
 - `required: true`: the agent serves nobody without Parafé. A2A 1.0 servers, including `@a2a-js/sdk`, reject any request that doesn't activate the extension (error `-32008`) before your code runs. That's enforcement for free.

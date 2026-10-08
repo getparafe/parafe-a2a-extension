@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.0 (2026-10-08)
+
+Additive. Broker SPEC-003 part 2 (MUSE-24): an agent card can state who the initiator must be and which AP2 mandate issuers a scope trusts, as fields rather than prose.
+
+- `ScopeRequirement` gains optional `minimum_identity_assurance`, `minimum_verification_tier`, `exclusions` and `trusted_issuers` (`TrustedIssuerRef[]`: `{ name?, iss?, kid?, jkt }`, the issuer named by its RFC 7638 key thumbprint).
+- `scopeRequirementsFromPolicies(scopePolicies)` builds the card's `scope_requirements` from the agent's broker scope policies (`GET /agents/{id}/scope-policies`), so the card says what the broker enforces and can't drift from it.
+- `parseAgentCardExtension()` refuses a card with an unknown tier or assurance, non-list `exclusions`, or a trusted issuer without `jkt`.
+
 ## 3.1.0 (2026-10-01)
 
 Additive. Broker SPEC-002 (operator and principal): consent tokens name who runs each agent (its *operator*) and who it acts for (its *principal*).

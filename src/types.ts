@@ -142,6 +142,48 @@ export interface ScopeRequirement {
   maximum_denied_requests_30d?: number;
   minimum_unique_counterparties?: number;
   minimum_handshake_success_rate?: number;
+  /**
+   * 3.2: who the initiator must be, so clients know before they ask. The broker
+   * enforces these when they are in the agent's registered scope policy.
+   * Identity assurance, weakest to strongest: self_registered < registered = claimed.
+   */
+  minimum_identity_assurance?: 'self_registered' | 'registered' | 'claimed';
+  /** Verification tier of the person or org behind the initiator, weakest to strongest. */
+  minimum_verification_tier?: 'unverified' | 'email_verified' | 'domain_verified' | 'org_verified';
+  /** Actions never granted in this scope. */
+  exclusions?: string[];
+  /**
+   * 3.2: the AP2 mandate issuers this scope trusts for 'delegated' and 'verified',
+   * by RFC 7638 key thumbprint (`jkt`). The keys themselves are in the broker's
+   * scope policy (`GET /agents/{id}/scope-policies`).
+   */
+  trusted_issuers?: TrustedIssuerRef[];
+}
+
+/** A trusted AP2 mandate issuer, named by its key thumbprint. */
+export interface TrustedIssuerRef {
+  name?: string;
+  iss?: string;
+  kid?: string;
+  /** RFC 7638 thumbprint of the issuer's public key. */
+  jkt: string;
+}
+
+/** A broker scope policy (the value per scope of `GET /agents/{id}/scope-policies`). */
+export interface ScopePolicyLike {
+  permissions?: string[];
+  exclusions?: string[];
+  minimum_authorization_modality?: ScopeRequirement['minimum_authorization_modality'];
+  minimum_identity_assurance?: ScopeRequirement['minimum_identity_assurance'];
+  minimum_verification_tier?: ScopeRequirement['minimum_verification_tier'];
+  minimum_initiator_proof?: ScopeRequirement['minimum_initiator_proof'];
+  minimum_tenure_days?: number;
+  minimum_session_completion_rate?: number;
+  maximum_denied_requests_30d?: number;
+  minimum_unique_counterparties?: number;
+  minimum_handshake_success_rate?: number;
+  ap2_trusted_issuers?: Array<{ jwk: JsonWebKeyLike; kid?: string; iss?: string; name?: string }>;
+  [key: string]: unknown;
 }
 
 /** The params block inside a Parafe AgentCard extension entry. */

@@ -1,10 +1,64 @@
+import { calculateJwkThumbprint, type JWK } from 'jose';
 import { PARAFE_EXTENSION_URI, DEFAULT_BROKER_URL } from './constants.js';
 import type {
   ParafeAgentCardExtension,
   ParafeExtensionParams,
   BuildAgentCardOptions,
   ScopeRequirement,
+  ScopePolicyLike,
+  TrustedIssuerRef,
 } from './types.js';
+
+const NUMERIC_FLOORS = [
+  'minimum_tenure_days',
+  'minimum_session_completion_rate',
+  'maximum_denied_requests_30d',
+  'minimum_unique_counterparties',
+  'minimum_handshake_success_rate',
+] as const;
+const ASSURANCES = new Set(['self_registered', 'registered', 'claimed']);
+const TIERS = new Set(['unverified', 'email_verified', 'domain_verified', 'org_verified']);
+
+/**
+ * 3.2: builds the card's `scope_requirements` from the agent's broker scope
+ * policies (the `scope_policies` of `GET /agents/{id}/scope-policies`), so the
+ * card says exactly what the broker enforces and can't drift from it. Trusted
+ * AP2 issuers are named by key thumbprint, not by key. Issuers the broker trusts
+ * for every agent (its own list) aren't in a scope policy, so not here either.
+ *
+ * @example
+ * const { scope_policies } = await (await fetch(`${broker}/agents/${agentId}/scope-policies`)).json();
+ * const ext = buildAgentCardExtension({ agentId, required: false, scopeRequirements: await scopeRequirementsFromPolicies(scope_policies) });
+ */
+export async function scopeRequirementsFromPolicies(
+  scopePolicies: Record<string, ScopePolicyLike>
+): Promise<Record<string, ScopeRequirement>> {
+  const out: Record<string, ScopeRequirement> = {};
+  for (const [scope, policy] of Object.entries(scopePolicies ?? {})) {
+    const req: ScopeRequirement = {
+      permissions: Array.isArray(policy.permissions) ? [...policy.permissions] : [],
+      minimum_authorization_modality: policy.minimum_authorization_modality ?? 'autonomous',
+    };
+    if (Array.isArray(policy.exclusions)) req.exclusions = [...policy.exclusions];
+    if (policy.minimum_identity_assurance) req.minimum_identity_assurance = policy.minimum_identity_assurance;
+    if (policy.minimum_verification_tier) req.minimum_verification_tier = policy.minimum_verification_tier;
+    if (policy.minimum_initiator_proof) req.minimum_initiator_proof = policy.minimum_initiator_proof;
+    for (const k of NUMERIC_FLOORS) {
+      const v = policy[k];
+      if (typeof v === 'number') req[k] = v;
+    }
+    if (Array.isArray(policy.ap2_trusted_issuers) && policy.ap2_trusted_issuers.length) {
+      req.trusted_issuers = await Promise.all(policy.ap2_trusted_issuers.map(async (i): Promise<TrustedIssuerRef> => ({
+        ...(i.name ? { name: i.name } : {}),
+        ...(i.iss ? { iss: i.iss } : {}),
+        ...(i.kid ? { kid: i.kid } : {}),
+        jkt: await calculateJwkThumbprint(i.jwk as JWK),
+      })));
+    }
+    out[scope] = req;
+  }
+  return out;
+}
 
 /**
  * Builds a Parafe extension entry for an AgentCard's capabilities.extensions array.
@@ -95,6 +149,19 @@ export function parseAgentCardExtension(
     if (!Array.isArray(req['permissions'])) return null;
     const modality = req['minimum_authorization_modality'];
     if (modality !== undefined && !validModalities.has(modality as string)) return null;
+    const assurance = req['minimum_identity_assurance'];
+    if (assurance !== undefined && !ASSURANCES.has(assurance as string)) return null;
+    const tier = req['minimum_verification_tier'];
+    if (tier !== undefined && !TIERS.has(tier as string)) return null;
+    const exclusions = req['exclusions'];
+    if (exclusions !== undefined && !Array.isArray(exclusions)) return null;
+    const issuers = req['trusted_issuers'];
+    if (issuers !== undefined) {
+      if (!Array.isArray(issuers)) return null;
+      for (const i of issuers as Array<Record<string, unknown>>) {
+        if (!i || typeof i !== 'object' || typeof i['jkt'] !== 'string' || !i['jkt']) return null;
+      }
+    }
   }
 
   return {

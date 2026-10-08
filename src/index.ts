@@ -23,6 +23,8 @@ export type {
 // Types — AgentCard
 export type {
   ScopeRequirement,
+  TrustedIssuerRef,
+  ScopePolicyLike,
   ParafeExtensionParams,
   ParafeAgentCardExtension,
   BuildAgentCardOptions,
@@ -75,6 +77,7 @@ export { activationHeaders, isParafeActivated } from './headers.js';
 export {
   buildAgentCardExtension,
   parseAgentCardExtension,
+  scopeRequirementsFromPolicies,
 } from './agent-card.js';
 
 // Verification

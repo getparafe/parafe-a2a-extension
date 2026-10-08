@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { calculateJwkThumbprint } from 'jose';
 import {
   buildAgentCardExtension,
   parseAgentCardExtension,
+  scopeRequirementsFromPolicies,
   PARAFE_EXTENSION_URI,
   DEFAULT_BROKER_URL,
 } from '../../src/index.js';
@@ -215,5 +217,54 @@ describe('parseAgentCardExtension', () => {
 
     const result = parseAgentCardExtension(extensions);
     expect(result!.description).toBe('Requires Parafe trust');
+  });
+});
+
+describe('scopeRequirementsFromPolicies (broker scope policies to card scope requirements)', () => {
+  const issuerJwk = { kty: 'EC', crv: 'P-256', x: 'f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU', y: 'x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0' };
+  const policies = {
+    'check-menu': { permissions: ['read_menu'], exclusions: [] },
+    'place-order': {
+      permissions: ['create_order', 'pay'],
+      exclusions: ['refund'],
+      minimum_authorization_modality: 'verified',
+      minimum_identity_assurance: 'claimed',
+      minimum_verification_tier: 'email_verified',
+      minimum_initiator_proof: 'pop',
+      minimum_tenure_days: 7,
+      ap2_trusted_issuers: [{ jwk: issuerJwk, kid: 'wallet-1', iss: 'https://wallet.example', name: 'Example Wallet' }],
+      description: 'Orders',
+    },
+  };
+
+  it('copies the rules and names trusted issuers by thumbprint, without their keys', async () => {
+    const reqs = await scopeRequirementsFromPolicies(policies);
+    expect(reqs['check-menu']).toEqual({ permissions: ['read_menu'], minimum_authorization_modality: 'autonomous', exclusions: [] });
+    expect(reqs['place-order']).toEqual({
+      permissions: ['create_order', 'pay'],
+      exclusions: ['refund'],
+      minimum_authorization_modality: 'verified',
+      minimum_identity_assurance: 'claimed',
+      minimum_verification_tier: 'email_verified',
+      minimum_initiator_proof: 'pop',
+      minimum_tenure_days: 7,
+      trusted_issuers: [{ name: 'Example Wallet', iss: 'https://wallet.example', kid: 'wallet-1', jkt: await calculateJwkThumbprint(issuerJwk) }],
+    });
+    expect(JSON.stringify(reqs)).not.toContain(issuerJwk.x);
+  });
+
+  it('builds a card whose scope requirements parse back unchanged', async () => {
+    const scopeRequirements = await scopeRequirementsFromPolicies(policies);
+    const ext = buildAgentCardExtension({ agentId: 'prf_agent_shop', required: false, scopeRequirements });
+    const parsed = parseAgentCardExtension([ext as unknown as { uri: string }]);
+    expect(parsed?.params.scope_requirements).toEqual(scopeRequirements);
+  });
+
+  it('parse refuses a card with an unknown tier or a trusted issuer without a thumbprint', () => {
+    const card = (req: Record<string, unknown>) => [{ uri: PARAFE_EXTENSION_URI, required: false, params: { agent_id: 'a', broker_url: DEFAULT_BROKER_URL, minimum_identity_assurance: 'self_registered', scope_requirements: { s: { permissions: [], ...req } } } }];
+    expect(parseAgentCardExtension(card({ minimum_verification_tier: 'gold' }))).toBeNull();
+    expect(parseAgentCardExtension(card({ minimum_identity_assurance: 'very' }))).toBeNull();
+    expect(parseAgentCardExtension(card({ trusted_issuers: [{ name: 'x' }] }))).toBeNull();
+    expect(parseAgentCardExtension(card({ minimum_verification_tier: 'email_verified', trusted_issuers: [{ jkt: 'abc' }] }))).not.toBeNull();
   });
 });
