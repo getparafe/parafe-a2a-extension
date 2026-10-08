@@ -75,8 +75,11 @@ describeIntegration('integration: key-bound consent tokens (2.1)', () => {
     const alex = generateKeyPairSync('ed25519');
     const shop = generateKeyPairSync('ed25519');
     const spki = (k: typeof alex.publicKey) => k.export({ type: 'spki', format: 'der' }).toString('base64');
-    const a = await post('/agents/register', { agent_name: `ext-alex-${suffix}`, principal_name: 'Ext', public_key: spki(alex.publicKey) }, auth);
-    const b = await post('/agents/register', { agent_name: `ext-shop-${suffix}`, principal_name: 'Ext', public_key: spki(shop.publicKey), scope_policies: { order: { permissions: ['create_order'], exclusions: ['issue_refund'] } } }, auth);
+    // Broker SPEC-003 part 4: registering a key needs a proof signed by it.
+    const regProof = (key: typeof alex.privateKey) => new SignJWT({ htm: 'POST', htu: `${BROKER_URL}/agents/register`, jti: randomUUID() })
+      .setProtectedHeader({ alg: 'EdDSA', typ: 'parafe-pop+jwt' }).setIssuedAt().sign(key);
+    const a = await post('/agents/register', { agent_name: `ext-alex-${suffix}`, principal_name: 'Ext', public_key: spki(alex.publicKey) }, { ...auth, 'Parafe-PoP': await regProof(alex.privateKey) });
+    const b = await post('/agents/register', { agent_name: `ext-shop-${suffix}`, principal_name: 'Ext', public_key: spki(shop.publicKey), scope_policies: { order: { permissions: ['create_order'], exclusions: ['issue_refund'] } } }, { ...auth, 'Parafe-PoP': await regProof(shop.privateKey) });
     const pop = await new SignJWT({ htm: 'POST', htu: `${BROKER_URL}/handshake/initiate`, target_agent_id: b.agent_id, requested_scope: 'order', jti: randomUUID() })
       .setProtectedHeader({ alg: 'EdDSA', typ: 'parafe-pop+jwt' }).setIssuedAt().sign(alex.privateKey);
     const init = await post('/handshake/initiate', { initiator_credential: a.credential, target_agent_id: b.agent_id, requested_scope: 'order' }, { 'Parafe-PoP': pop });
