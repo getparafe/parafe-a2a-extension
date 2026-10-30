@@ -127,19 +127,16 @@ describeIntegration('integration: key rotation (broker SPEC-006)', () => {
       if (!res.ok) throw new Error(`${res.status} ${path}: ${await res.text()}`);
       return res.json() as Promise<Record<string, any>>;
     };
-    const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const signup = await post('/auth/signup', { email: `ext-rot-${suffix}@example.com`, password: 'test-password-12345', name: 'Ext Rotation' });
-    // Rotating needs agents:revoke too, which the signup key doesn't have: a full key.
-    const fullKey = await post('/auth/api-keys', { label: 'rotation' }, { Authorization: `Bearer ${signup.session_token}` });
-    const auth = { Authorization: `Bearer ${fullKey.key}` };
+    // Self-registered agents (no API key): each rotates itself, with its credential and a proof from its current key.
     const spki = (k: ReturnType<typeof generateKeyPairSync>['publicKey']) => k.export({ type: 'spki', format: 'der' }).toString('base64');
     const proofBy = (key: ReturnType<typeof generateKeyPairSync>['privateKey'], htu: string, claims: Record<string, unknown> = {}) =>
       new SignJWT({ htm: 'POST', htu, jti: randomUUID(), ...claims }).setProtectedHeader({ alg: 'EdDSA', typ: 'parafe-pop+jwt' }).setIssuedAt().sign(key);
-    const register = async (name: string, key: ReturnType<typeof generateKeyPairSync>, extra: Record<string, unknown> = {}) =>
-      post('/agents/register', { agent_name: `${name}-${suffix}`, principal_name: 'Ext', public_key: spki(key.publicKey), ...extra }, { ...auth, 'Parafe-PoP': await proofBy(key.privateKey, `${BROKER_URL}/agents/register`) });
-    const rotate = async (agentId: string, next: ReturnType<typeof generateKeyPairSync>) => {
-      const url = `${BROKER_URL}/agents/${agentId}/rotate-key`;
-      return post(`/agents/${agentId}/rotate-key`, { new_public_key: spki(next.publicKey), new_key_proof: await proofBy(next.privateKey, url, { agent_id: agentId }) }, auth);
+    const register = async (key: ReturnType<typeof generateKeyPairSync>, extra: Record<string, unknown> = {}) =>
+      post('/agents/register', { public_key: spki(key.publicKey), ...extra }, { 'Parafe-PoP': await proofBy(key.privateKey, `${BROKER_URL}/agents/register`) });
+    const rotate = async (agent: Record<string, any>, current: ReturnType<typeof generateKeyPairSync>, next: ReturnType<typeof generateKeyPairSync>) => {
+      const url = `${BROKER_URL}/agents/${agent.agent_id}/rotate-key`;
+      return post(`/agents/${agent.agent_id}/rotate-key`, { new_public_key: spki(next.publicKey), new_key_proof: await proofBy(next.privateKey, url, { agent_id: agent.agent_id }) },
+        { Authorization: `Bearer ${agent.credential}`, 'Parafe-PoP': await proofBy(current.privateKey, url, { agent_id: agent.agent_id }) });
     };
     const handshake = async (alexKey: ReturnType<typeof generateKeyPairSync>, alexCred: string, shopKey: ReturnType<typeof generateKeyPairSync>, shopCred: string, shopId: string) => {
       const init = await post('/handshake/initiate', { initiator_credential: alexCred, target_agent_id: shopId, requested_scope: 'order' },
@@ -149,18 +146,19 @@ describeIntegration('integration: key rotation (broker SPEC-006)', () => {
 
     let alexKey = generateKeyPairSync('ed25519');
     let shopKey = generateKeyPairSync('ed25519');
-    const a = await register('ext-rot-alex', alexKey);
-    const b = await register('ext-rot-shop', shopKey, { scope_policies: { order: { permissions: ['create_order'] } } });
+    const a = await register(alexKey);
+    const b = await register(shopKey, { scope_policies: { order: { permissions: ['create_order'] } } });
     const keys = await fetchBrokerKeys(BROKER_URL);
     const before = await handshake(alexKey, a.credential, shopKey, b.credential, b.agent_id);
     const oldToken = before.consent_token.token as string;
 
-    // The shop's org replaces both keys (an org's agents rotate through the org).
+    // Both agents replace their keys.
     const oldAlexKey = alexKey;
     alexKey = generateKeyPairSync('ed25519');
-    const ra = await rotate(a.agent_id, alexKey);
+    const ra = await rotate(a, oldAlexKey, alexKey);
+    const oldShopKey = shopKey;
     shopKey = generateKeyPairSync('ed25519');
-    const rb = await rotate(b.agent_id, shopKey);
+    const rb = await rotate(b, oldShopKey, shopKey);
     expect(rb.kid).toBe(`${b.did}#keys-2`);
 
     // A token from before, presented with the retired key: refused (the DID document's current key is the new one).
