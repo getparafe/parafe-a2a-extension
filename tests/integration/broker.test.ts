@@ -117,3 +117,65 @@ describeIntegration('integration: key-bound consent tokens (2.1)', () => {
     expect(actions.map((x) => [x.action, x.result, x.error])).toEqual([['create_order', 'success', null], ['issue_refund', 'error', 'excluded']]);
   });
 });
+
+// ── Broker SPEC-006: an agent replaces its key ──
+
+describeIntegration('integration: key rotation (broker SPEC-006)', () => {
+  it('after rotating, receipts carry #keys-2 and file; proofs from the retired key are refused', async () => {
+    const post = async (path: string, body: unknown, headers: Record<string, string> = {}) => {
+      const res = await fetch(`${BROKER_URL}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error(`${res.status} ${path}: ${await res.text()}`);
+      return res.json() as Promise<Record<string, any>>;
+    };
+    const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const signup = await post('/auth/signup', { email: `ext-rot-${suffix}@example.com`, password: 'test-password-12345', name: 'Ext Rotation' });
+    // Rotating needs agents:revoke too, which the signup key doesn't have: a full key.
+    const fullKey = await post('/auth/api-keys', { label: 'rotation' }, { Authorization: `Bearer ${signup.session_token}` });
+    const auth = { Authorization: `Bearer ${fullKey.key}` };
+    const spki = (k: ReturnType<typeof generateKeyPairSync>['publicKey']) => k.export({ type: 'spki', format: 'der' }).toString('base64');
+    const proofBy = (key: ReturnType<typeof generateKeyPairSync>['privateKey'], htu: string, claims: Record<string, unknown> = {}) =>
+      new SignJWT({ htm: 'POST', htu, jti: randomUUID(), ...claims }).setProtectedHeader({ alg: 'EdDSA', typ: 'parafe-pop+jwt' }).setIssuedAt().sign(key);
+    const register = async (name: string, key: ReturnType<typeof generateKeyPairSync>, extra: Record<string, unknown> = {}) =>
+      post('/agents/register', { agent_name: `${name}-${suffix}`, principal_name: 'Ext', public_key: spki(key.publicKey), ...extra }, { ...auth, 'Parafe-PoP': await proofBy(key.privateKey, `${BROKER_URL}/agents/register`) });
+    const rotate = async (agentId: string, next: ReturnType<typeof generateKeyPairSync>) => {
+      const url = `${BROKER_URL}/agents/${agentId}/rotate-key`;
+      return post(`/agents/${agentId}/rotate-key`, { new_public_key: spki(next.publicKey), new_key_proof: await proofBy(next.privateKey, url, { agent_id: agentId }) }, auth);
+    };
+    const handshake = async (alexKey: ReturnType<typeof generateKeyPairSync>, alexCred: string, shopKey: ReturnType<typeof generateKeyPairSync>, shopCred: string, shopId: string) => {
+      const init = await post('/handshake/initiate', { initiator_credential: alexCred, target_agent_id: shopId, requested_scope: 'order' },
+        { 'Parafe-PoP': await proofBy(alexKey.privateKey, `${BROKER_URL}/handshake/initiate`, { target_agent_id: shopId, requested_scope: 'order' }) });
+      return post('/handshake/complete', { handshake_id: init.handshake_id, target_credential: shopCred, challenge_response: nodeSign(null, Buffer.from(init.challenge_for_target, 'hex'), shopKey.privateKey).toString('base64') });
+    };
+
+    let alexKey = generateKeyPairSync('ed25519');
+    let shopKey = generateKeyPairSync('ed25519');
+    const a = await register('ext-rot-alex', alexKey);
+    const b = await register('ext-rot-shop', shopKey, { scope_policies: { order: { permissions: ['create_order'] } } });
+    const keys = await fetchBrokerKeys(BROKER_URL);
+    const before = await handshake(alexKey, a.credential, shopKey, b.credential, b.agent_id);
+    const oldToken = before.consent_token.token as string;
+
+    // The shop's org replaces both keys (an org's agents rotate through the org).
+    const oldAlexKey = alexKey;
+    alexKey = generateKeyPairSync('ed25519');
+    const ra = await rotate(a.agent_id, alexKey);
+    shopKey = generateKeyPairSync('ed25519');
+    const rb = await rotate(b.agent_id, shopKey);
+    expect(rb.kid).toBe(`${b.did}#keys-2`);
+
+    // A token from before, presented with the retired key: refused (the DID document's current key is the new one).
+    const stale = { messageId: 'm-r1', ...withConsentToken({ parts: [] }, oldToken, before.session.session_id, await createPresentationProof(oldToken, oldAlexKey.privateKey)) };
+    await expect(verifyMessageConsentToken(stale, keys, { agentId: b.agent_id, brokerUrl: BROKER_URL as string })).rejects.toBeInstanceOf(InvalidProofError);
+
+    // A new session with the new keys: the proof checks, the shop's receipt carries #keys-2 and the broker indexes it.
+    const after = await handshake(alexKey, ra.credential, shopKey, rb.credential, b.agent_id);
+    const token = after.consent_token.token as string;
+    const receipts = createActionReceiptSigner({ agentId: b.agent_id, agentDid: b.did, privateKey: () => shopKey.privateKey, credential: () => rb.credential, brokerUrl: BROKER_URL as string });
+    const msg = { messageId: 'm-r2', ...withConsentToken({ parts: [] }, token, after.session.session_id, await createPresentationProof(token, alexKey.privateKey, { messageId: 'm-r2' })) };
+    const ok = await verifyMessageConsentToken(msg, keys, { agentId: b.agent_id, action: 'create_order', brokerUrl: BROKER_URL as string, receipts });
+    expect(ok.proofVerified).toBe(true);
+    const done = await ok.completeAction({ businessRef: 'ord_rot_1' });
+    expect(decodeJwt(done.receipt) && JSON.parse(Buffer.from(done.receipt.split('.')[0]!, 'base64url').toString()).kid).toBe(`${b.did}#keys-2`);
+    expect((await done.filed)?.seq).toBe(1);
+  });
+});

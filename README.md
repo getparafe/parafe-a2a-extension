@@ -256,7 +256,7 @@ capabilities: { extensions: [buildAgentCardExtension({ agentId, scopeRequirement
 | The message's `session_id` matches the token's | `InvalidConsentTokenError` |
 | `action` is permitted and not excluded | `ScopeViolationError` |
 | Scope declared, permissions within it, modality ≥ minimum, `initiator_proof` meets `minimum_initiator_proof` (`scopeRequirements`) | `ScopeViolationError` |
-| Presentation proof (required unless `requireProof: false`; always checked when sent): signed by the key in the token's `cnf.jkt`, for this token and its audience, for this message when the proof names one (`mid`), fresh, not replayed (replays are remembered per process) | `InvalidProofError` |
+| Presentation proof (required unless `requireProof: false`; always checked when sent): signed by the key in the token's `cnf.jkt`, which must be the initiator's current key (a retired key is refused), for this token and its audience, for this message when the proof names one (`mid`), fresh, not replayed (replays are remembered per process) | `InvalidProofError` |
 | No consent token in the message | `MissingParafeExtensionError` |
 | Parafé data present but malformed | `MalformedParafeDataError` |
 
@@ -278,8 +278,9 @@ Every error has a `code`. `parafeErrorData(err)` turns it into the spec's `error
 | `withConsentToken(message, token, sessionId, proof?)` | Shorthand for `withParafe(message, { consent: … })` |
 | `withSessionClosed(message, sessionId, receipt)` / `extractSessionClosed(message)` | Tell the other side the session is over, with the receipt JWS |
 | `createPresentationProof(token, privateKey, { messageId? })` | Initiator: the proof to send with a key-bound token |
-| `createActionReceiptSigner({ agentId, privateKey, credential, brokerUrl?, agentDid?, file?, onFileError? })` | 2.2: sign (`sign`), file (`file`), both (`record`), receipt a refusal (`refuse`); `flush()` before close. `credential`: a string, or a function returning the current one (read at each filing). `brokerUrl` defaults to production |
-| `signActionReceipt(privateKey, agentDid, input)` / `fileActionReceipt(receipt, { sessionId, credential, privateKey, brokerUrl?, kind? })` | The same, as functions (`brokerUrl` defaults to production) |
+| `createActionReceiptSigner({ agentId, privateKey, credential, brokerUrl?, agentDid?, file?, onFileError? })` | 2.2: sign (`sign`), file (`file`), both (`record`), receipt a refusal (`refuse`); `flush()` before close. `credential` and `privateKey`: the value, or a function returning the current one (read at each use; pass functions if the agent renews its credential or replaces its key while running). Receipts carry the credential's `kid`. `brokerUrl` defaults to production |
+| `agentKeyId(agentDid, credential?)` / `currentDidKey(didDocument)` | 3.4: the agent's current key as a DID URL (the credential's `kid`, else `#keys-1`); the current key in a DID document (the one in `authentication`) |
+| `signActionReceipt(privateKey, agentDid, input, kid?)` / `fileActionReceipt(receipt, { sessionId, credential, privateKey, brokerUrl?, kind? })` | The same, as functions (`brokerUrl` defaults to production) |
 | `withActionReceipts(message, receipts)` / `extractActionReceipts(message)` | Attach the action receipts you signed (beside any other Parafé data, or alone); read them |
 | `verifyPresentationProof(proof, token, claims, { initiatorKey?, brokerUrl?, messageId? })` | Check a proof yourself (without `initiatorKey`, the DID document is read at `brokerUrl`, default production) |
 | `readParafe(message)` | The message's Parafé data, or `null` |

@@ -82,14 +82,20 @@ export interface RecordedActionReceipt {
 export interface ActionReceiptSignerOptions {
   /** Your Parafé agent ID. */
   agentId: string;
-  /** Your agent's private key (a Node KeyObject or WebCrypto CryptoKey; Ed25519 or P-256). */
-  privateKey: KeyLike;
+  /**
+   * Your agent's private key (a Node KeyObject or WebCrypto CryptoKey; Ed25519
+   * or P-256), or a function that returns the current one, read at each use.
+   * Pass a function if the agent may replace its key while running (broker
+   * SPEC-006): the old key stops counting at once.
+   */
+  privateKey: KeyLike | (() => KeyLike | Promise<KeyLike>);
   /**
    * Your agent's credential, to file receipts with the broker: the credential, or
    * a function that returns the current one, read at each filing. Pass a function
    * if the agent renews its credential while running (e.g.
    * `() => parafe.exportKeys().credential`): renewal revokes the old credential,
-   * and filings with it fail (401).
+   * and filings with it fail (401). Receipts are signed with the key the
+   * credential names (`kid`, `<agent DID>#keys-N`).
    */
   credential: string | (() => string | Promise<string>);
   /**
@@ -161,10 +167,28 @@ function algOf(privateKey: KeyLike): 'ES256' | 'EdDSA' {
 }
 
 /**
- * Sign an action receipt with the agent's key: typ parafe-action-receipt+jwt,
- * kid `<agent DID>#keys-1`, iss the agent DID.
+ * The agent's current key as a DID URL: the credential's `kid` (broker
+ * SPEC-006, `<agent DID>#keys-N`, N grows with each key rotation). A credential
+ * from before rotation existed has none: its key is `#keys-1`.
  */
-export async function signActionReceipt(privateKey: KeyLike, agentDid: string, input: ActionReceiptInput): Promise<string> {
+export function agentKeyId(agentDid: string, credential?: string): string {
+  if (credential) {
+    try {
+      const kid = decodeJwt(credential)['kid'];
+      if (typeof kid === 'string' && kid.startsWith(`${agentDid}#keys-`)) return kid;
+    } catch {
+      // not a JWT: #keys-1
+    }
+  }
+  return `${agentDid}#keys-1`;
+}
+
+/**
+ * Sign an action receipt with the agent's key: typ parafe-action-receipt+jwt,
+ * kid the agent's current key (`agentKeyId`; default `<agent DID>#keys-1`),
+ * iss the agent DID.
+ */
+export async function signActionReceipt(privateKey: KeyLike, agentDid: string, input: ActionReceiptInput, kid: string = `${agentDid}#keys-1`): Promise<string> {
   const result = input.result ?? 'success';
   if (result === 'error' && !input.error) throw new TypeError("an 'error' receipt needs error (e.g. 'excluded')");
   if (result === 'success' && input.error) throw new TypeError("a 'success' receipt has no error");
@@ -183,7 +207,7 @@ export async function signActionReceipt(privateKey: KeyLike, agentDid: string, i
     business_ref: input.businessRef ?? null,
     mandate_ref: input.mandateRef ?? null,
   })
-    .setProtectedHeader({ alg: algOf(privateKey), kid: `${agentDid}#keys-1`, typ: ACTION_RECEIPT_TYP })
+    .setProtectedHeader({ alg: algOf(privateKey), kid, typ: ACTION_RECEIPT_TYP })
     .setIssuer(agentDid)
     .setIssuedAt()
     .setJti(crypto.randomUUID())
@@ -290,8 +314,18 @@ export function createActionReceiptSigner(options: ActionReceiptSignerOptions): 
     return c;
   };
 
+  // Read at each use: a key rotation replaces the key.
+  const privateKey = async (): Promise<KeyLike> =>
+    typeof options.privateKey === 'function' ? await (options.privateKey as () => KeyLike | Promise<KeyLike>)() : options.privateKey;
+  // Signing stays local: without a readable credential, #keys-1 (the filing reports the missing credential).
+  const kid = async (agentDid: string) => agentKeyId(agentDid, await credential().catch(() => undefined));
+  const sign = async (input: ActionReceiptInput) => {
+    const agentDid = await did();
+    return signActionReceipt(await privateKey(), agentDid, input, await kid(agentDid));
+  };
+
   const file = async (sessionId: string, receipt: string, kind?: ActionReceiptKind) =>
-    fileActionReceipt(receipt, { sessionId, credential: await credential(), privateKey: options.privateKey, brokerUrl, ...(kind ? { kind } : {}) });
+    fileActionReceipt(receipt, { sessionId, credential: await credential(), privateKey: await privateKey(), brokerUrl, ...(kind ? { kind } : {}) });
 
   const inBackground = (sessionId: string, receipt: string, kind?: ActionReceiptKind): Promise<ActionReceiptAck | null> => {
     const filed: Promise<ActionReceiptAck | null> = file(sessionId, receipt, kind).catch((err) => {
@@ -304,7 +338,7 @@ export function createActionReceiptSigner(options: ActionReceiptSignerOptions): 
   };
 
   const record = async (input: ActionReceiptInput): Promise<RecordedActionReceipt> => {
-    const receipt = await signActionReceipt(options.privateKey, await did(), input);
+    const receipt = await sign(input);
     if (!fileByDefault) return { receipt, filed: Promise.resolve(null) };
     return { receipt, filed: inBackground(input.sessionId, receipt) };
   };
@@ -312,7 +346,7 @@ export function createActionReceiptSigner(options: ActionReceiptSignerOptions): 
   return {
     agentId: options.agentId,
     brokerUrl,
-    sign: async (input) => signActionReceipt(options.privateKey, await did(), input),
+    sign,
     file,
     record,
     async refuse(consent, action, err) {
@@ -337,7 +371,7 @@ export function createActionReceiptSigner(options: ActionReceiptSignerOptions): 
     },
     async ap2Receipt(sessionId, input) {
       const agentDid = await did();
-      const signed = await signAp2Receipt(options.privateKey, { ...input, iss: input.iss ?? agentDid, kid: input.kid ?? `${agentDid}#keys-1` });
+      const signed = await signAp2Receipt(await privateKey(), { ...input, iss: input.iss ?? agentDid, kid: input.kid ?? (await kid(agentDid)) });
       const filed = fileByDefault ? inBackground(sessionId, signed.receipt, signed.kind) : Promise.resolve(null);
       return { ...signed, filed };
     },

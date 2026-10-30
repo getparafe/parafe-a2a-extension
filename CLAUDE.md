@@ -37,6 +37,7 @@ Integration tests run only when `PARAFE_TEST_BROKER_URL` is set; otherwise they'
 - **No A2A SDK dependency** — types are structural so the package works with any SDK or raw JSON. `@a2a-js/sdk` is a devDependency for interop tests only.
 - **Online + offline verification** — `verifyConsentTokenOnline` calls the broker. `verifyConsentTokenOffline` verifies against the cached JWKS without network. Both available.
 - **Key binding (2.1)** — a consent token names the initiator's key (`cnf.jkt`); `verifyMessageConsentToken` checks the presentation proof whenever one is sent, and requires one unless `requireProof: false` (default on since 3.0).
+- **Key rotation (3.4)** — broker SPEC-006: agents' keys are `#keys-N`. Receipts are signed with the credential's `kid` (`agentKeyId`); presentation proofs check against the DID document's current key (`currentDidKey`: the one in `authentication`), never `verificationMethod[0]` by position; a cached key that doesn't match `cnf.jkt` is refetched once. The signer's `privateKey` and `credential` may be functions, read at each use.
 - **Response shape validation** — Online verification validates broker response shape (`verification.ts`, `verifyConsentTokenOnline`) before trusting it.
 - **HTTPS warning** — `verifyConsentTokenOnline` warns (doesn't refuse) when the broker URL is non-HTTPS and not localhost. Key fetches, DID fetches and receipt filing don't check.
 

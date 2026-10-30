@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.4.0 (2026-10-30)
+
+Additive. Broker SPEC-006: an agent can replace its key (`POST /agents/{id}/rotate-key`). Its keys are numbered (`<agent DID>#keys-N`); the credential names the current one (`kid`), and the DID document lists retired keys after it (in `verificationMethod` only, with `parafe:retiredAt`). **Update before any of your agents rotates:** 3.3 signs receipts as `#keys-1`, which stops counting once the agent has a new key.
+
+- **Receipts are signed with the key the credential names.** `createActionReceiptSigner` reads `kid` from `credential` (`#keys-1` when the credential has none). New: `agentKeyId(agentDid, credential?)`; `signActionReceipt` takes the `kid` as an optional fourth argument.
+- **The signer's `privateKey` can be a function** returning the current key, read at each signing and filing (`() => currentKey`), as `credential` already can. A rotation replaces both.
+- **Presentation proofs check against the initiator's current key**: the one in its DID document's `authentication`, not the first key listed. A proof signed with a retired key is refused, though the document still lists that key for old receipts. A cached key that doesn't match the token's `cnf.jkt` is read again (the initiator may have rotated since). New: `currentDidKey(didDocument)`.
+
 ## 3.3.0 (2026-10-08)
 
 Fixes. Needs the broker from 2026-10-08 for the refusal codes and `agent_id`. No API is removed; `credential` and `InvalidConsentTokenError` accept more.

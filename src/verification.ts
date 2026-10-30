@@ -500,11 +500,30 @@ function claimProofJti(jti: string): boolean {
 
 /** Initiator keys fetched from DID documents, by broker and agent ID (10 minutes). */
 const didKeyCache = new Map<string, { jwk: JsonWebKeyLike; at: number }>();
-async function initiatorJwk(agentId: string, brokerUrl: string): Promise<JsonWebKeyLike> {
+
+interface DidDocumentLike {
+  verificationMethod?: Array<{ id?: string; publicKeyJwk?: JsonWebKeyLike }>;
+  authentication?: Array<string | { id?: string; publicKeyJwk?: JsonWebKeyLike }>;
+}
+
+/**
+ * The agent's current key in its DID document: the one in `authentication`
+ * (broker SPEC-006: after a key rotation, retired keys stay listed in
+ * `verificationMethod` for old receipts, but only the current key
+ * authenticates). A document without `authentication` has one key.
+ */
+export function currentDidKey(doc: DidDocumentLike): JsonWebKeyLike | undefined {
+  const auth = doc.authentication?.[0];
+  if (auth && typeof auth === 'object') return auth.publicKeyJwk;
+  if (typeof auth === 'string') return doc.verificationMethod?.find((m) => m.id === auth)?.publicKeyJwk;
+  return doc.verificationMethod?.length === 1 ? doc.verificationMethod[0]?.publicKeyJwk : undefined;
+}
+
+async function initiatorJwk(agentId: string, brokerUrl: string, fresh = false): Promise<JsonWebKeyLike> {
   brokerUrl = trimSlash(brokerUrl);
   const cacheKey = `${brokerUrl}|${agentId}`;
   const cached = didKeyCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.jwk;
+  if (!fresh && cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.jwk;
   let res: Response;
   try {
     res = await fetch(`${brokerUrl}/agents/${encodeURIComponent(agentId)}/did.json`);
@@ -512,9 +531,8 @@ async function initiatorJwk(agentId: string, brokerUrl: string): Promise<JsonWeb
     throw new InvalidProofError(`could not fetch the initiator's DID document: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!res.ok) throw new InvalidProofError(`the initiator's DID document is unavailable at ${brokerUrl} (${res.status}); is the agent revoked, or registered with another broker?`);
-  const doc = (await res.json()) as { verificationMethod?: Array<{ publicKeyJwk?: JsonWebKeyLike }> };
-  const jwk = doc.verificationMethod?.[0]?.publicKeyJwk;
-  if (!jwk) throw new InvalidProofError("the initiator's DID document has no public key");
+  const jwk = currentDidKey((await res.json()) as DidDocumentLike);
+  if (!jwk) throw new InvalidProofError("the initiator's DID document has no current public key");
   didKeyCache.set(cacheKey, { jwk, at: Date.now() });
   return jwk;
 }
@@ -540,7 +558,11 @@ export async function verifyPresentationProof(
   if (!jkt) throw new InvalidProofError('the consent token is not key-bound (no cnf.jkt)');
   const initiator = claims.sub ?? claims.initiator_agent_id;
   if (!initiator) throw new InvalidProofError('the consent token names no initiator');
-  const jwk = options.initiatorKey ?? (await initiatorJwk(initiator, options.brokerUrl ?? DEFAULT_BROKER_URL));
+  let jwk = options.initiatorKey ?? (await initiatorJwk(initiator, options.brokerUrl ?? DEFAULT_BROKER_URL));
+  // A cached key may be one the initiator has since replaced (SPEC-006): read the document again.
+  if (!options.initiatorKey && (await calculateJwkThumbprint(jwk as JWK)) !== jkt) {
+    jwk = await initiatorJwk(initiator, options.brokerUrl ?? DEFAULT_BROKER_URL, true);
+  }
   if ((await calculateJwkThumbprint(jwk as JWK)) !== jkt) {
     throw new InvalidProofError("the initiator's key is not the one the token is bound to");
   }

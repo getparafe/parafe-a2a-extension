@@ -88,6 +88,7 @@ export {
   createBrokerKeyCache,
   verifyMessageConsentToken,
   verifyPresentationProof,
+  currentDidKey,
   createPresentationProof,
 } from './verification.js';
 export type { ConsentVerifyResult, BrokerKeyCache } from './verification.js';
@@ -96,6 +97,7 @@ export type { ConsentVerifyResult, BrokerKeyCache } from './verification.js';
 export {
   createActionReceiptSigner,
   signActionReceipt,
+  agentKeyId,
   fileActionReceipt,
   actionErrorFor,
   jcs,
